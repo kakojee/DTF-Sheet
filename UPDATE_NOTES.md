@@ -1,12 +1,16 @@
 # Packing algorithm update
 
-This version keeps the current light-theme interface and replaces the original one-design-per-row shelf routine with an orientation-aware grouped row packer.
+This version replaces the previous per-row placement heuristic with a group-first block packer.
 
-- Evaluates original and exact 90-degree orientations for each uploaded design (up to 12 designs in exhaustive orientation combinations).
-- Keeps copies of each design contiguous as runs.
-- Fills available row width with other design runs when they fit.
-- Uses a common row boundary and 0.5-inch gap between rows to retain straight transverse cutting lanes.
-- Compares several row-order strategies and chooses the shortest valid candidate under the 89.9-inch limit.
-- Does not resize, recolor, redraw, or trim source artwork.
+- Each uploaded design's requested copies are arranged into one contiguous rectangular group.
+- The app evaluates original and exact 90-degree artwork orientations.
+- It tests multiple column/row shapes for each design group.
+- It compares multiple shelf arrangements of those groups across the 23-inch roll.
+- Each shelf has a common height and shelves are separated by a full 0.5-inch transverse lane.
+- A 0.5-inch gap is retained between copies inside a group and between groups.
+- Original artwork pixels are not resized, cropped, recolored, or redrawn.
 
-This is a heuristic, not a globally optimal nesting solver. Always inspect the preview and verify dimensions/copy counts before production. The Krema reference sheet is a design/production reference, not a machine-learning training process.
+This is a bounded heuristic optimizer, not a mathematically guaranteed global optimum. Inspect the preview and count check before production.
+
+## Deployment
+Replace the existing root-level `app.py` in the GitHub repository with this package's `kakojee_Print_Nest/app.py`. Keep the existing `requirements.txt` and `.streamlit/config.toml` (they are included here as matching copies). Commit the change and allow Streamlit Community Cloud to redeploy.

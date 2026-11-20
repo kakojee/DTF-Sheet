@@ -59,135 +59,142 @@ def make_instances(items: List[Dict]) -> List[Dict]:
 
 
 def shelf_pack(items: List[Dict], dpi: int, gap_in: float, roll_w: float, max_len: float):
-    """Orientation-aware grouped shelf packer with straight transverse cut lanes.
+    """Group-first, cut-aware block packer.
 
-    Each design remains a contiguous run within a row. Rows may contain multiple
-    design runs, but only when the row can accommodate them side-by-side. Every
-    row has one common top/bottom boundary, leaving a clear horizontal lane
-    between rows. The algorithm evaluates all orientation combinations for up
-    to 10 designs and several row-order strategies, then selects the shortest
-    valid sheet with a small penalty for fragmented design runs.
+    Each design is first made into one contiguous rectangular block of copies.
+    The block can use either exact artwork orientation and a range of grid
+    shapes (columns x rows). The block choices are then compared in several
+    shelf arrangements. This avoids scattering identical copies and gives
+    straight, full-width transverse cut lanes between shelf rows.
     """
+    import itertools
+
     roll_px, gap_px, max_h_px = px(roll_w, dpi), px(gap_in, dpi), px(max_len, dpi)
-    if len(items) > 12:
-        # Avoid exponential search for very large uploads; use deterministic
-        # greedy orientation evaluation for the common practical case.
-        orientation_sets = [None]
-    else:
-        import itertools
-        orientation_sets = list(itertools.product((False, True), repeat=len(items)))
 
-    def build_candidate(rotations, strategy):
-        groups = []
-        for item, rotate in zip(items, rotations):
-            im, wi, hi = oriented(item, rotate)
-            w, h = im.width, im.height
+    # Build possible contiguous group-block shapes for each uploaded design.
+    choices_by_item = []
+    for item in items:
+        options = []
+        for rotate in (False, True):
+            im, _, _ = oriented(item, rotate)
+            w, h = im.size
             if w > roll_px:
-                return None
-            cap = max(1, (roll_px + gap_px) // (w + gap_px))
-            groups.append({"item": item, "rotate": rotate, "image": im,
-                           "w": w, "h": h, "remaining": int(item["qty"]),
-                           "cap": cap})
+                continue
+            max_cols = min(int(item["qty"]), (roll_px + gap_px) // (w + gap_px))
+            for cols in range(1, max_cols + 1):
+                rows = math.ceil(int(item["qty"]) / cols)
+                bw = cols * w + (cols - 1) * gap_px
+                bh = rows * h + (rows - 1) * gap_px
+                if bw <= roll_px and bh <= max_h_px:
+                    options.append({"item": item, "rotate": rotate, "image": im,
+                                    "w": w, "h": h, "cols": cols, "rows": rows,
+                                    "bw": bw, "bh": bh})
+        if not options:
+            raise ValueError(f"{item['name']} cannot fit within the 23-inch roll in either orientation.")
+        # Remove duplicate block geometries for the same orientation.
+        seen = set(); unique = []
+        for op in options:
+            key = (op["rotate"], op["cols"], op["rows"], op["bw"], op["bh"])
+            if key not in seen:
+                seen.add(key); unique.append(op)
+        choices_by_item.append(unique)
 
-        # Row construction: place whole contiguous runs, then use remaining
-        # row width for another design where possible. Several orderings are
-        # tried to avoid a single greedy ordering dominating the result.
+    # Bound the search for unusually large jobs while retaining a diverse set
+    # of tall, wide and balanced group shapes.
+    combination_count = math.prod(len(x) for x in choices_by_item)
+    if combination_count > 150000:
+        reduced = []
+        for options in choices_by_item:
+            options = sorted(options, key=lambda o: (o["bh"] + 0.12 * o["bw"],
+                                                       abs(o["bw"] - 0.72 * roll_px)))
+            keep = options[:10]
+            # Keep the most horizontal and most vertical alternatives too.
+            keep.extend([min(options, key=lambda o: o["bw"]),
+                         min(options, key=lambda o: o["bh"])])
+            unique = []; seen = set()
+            for op in keep:
+                key = (op["rotate"], op["cols"], op["rows"])
+                if key not in seen:
+                    seen.add(key); unique.append(op)
+            reduced.append(unique)
+        choices_by_item = reduced
+
+    def pack_blocks(blocks, strategy):
         if strategy == 0:
-            ordered = sorted(groups, key=lambda g: (-g["h"], -g["w"], g["item"]["id"]))
+            ordered = sorted(blocks, key=lambda b: (-b["bh"], -b["bw"]))
         elif strategy == 1:
-            ordered = sorted(groups, key=lambda g: (-(g["w"] * g["h"]), -g["h"]))
+            ordered = sorted(blocks, key=lambda b: (-(b["bw"] * b["bh"]), -b["bh"]))
         elif strategy == 2:
-            ordered = sorted(groups, key=lambda g: (g["h"], -g["w"]))
+            ordered = sorted(blocks, key=lambda b: (-b["bw"], -b["bh"]))
+        elif strategy == 3:
+            ordered = sorted(blocks, key=lambda b: (b["bh"], -b["bw"]))
         else:
-            ordered = sorted(groups, key=lambda g: (-g["w"], -g["h"]))
+            ordered = sorted(blocks, key=lambda b: (-min(b["bw"], b["bh"]), -max(b["bw"], b["bh"])))
 
-        rows = []
-        # Repeatedly start a row with the next unplaced design run, then fill
-        # the remaining width with the best-fitting next design run(s).
-        while any(g["remaining"] > 0 for g in ordered):
-            available = [g for g in ordered if g["remaining"] > 0]
-            first = available[0]
-            row = {"height": first["h"], "segments": [], "used": 0}
-            def add_run(g):
-                space = roll_px - row["used"]
-                count = min(g["remaining"], g["cap"], max(0, (space + gap_px) // (g["w"] + gap_px)))
-                if count <= 0:
-                    return False
-                row["segments"].append((g, int(count)))
-                row["used"] += int(count) * g["w"] + (len(row["segments"]) - 1) * gap_px
-                row["height"] = max(row["height"], g["h"])
-                g["remaining"] -= int(count)
-                return True
-            add_run(first)
-            # Fill the remainder using designs that fit. Prefer similar heights
-            # to avoid deep unused pockets under short artwork.
-            while True:
-                candidates = [g for g in ordered if g["remaining"] > 0 and
-                              row["used"] + gap_px + g["w"] <= roll_px]
-                if not candidates:
-                    break
-                candidates.sort(key=lambda g: (-(min(g["h"], row["height"]) / max(g["h"], row["height"])),
-                                               -(g["w"] * min(g["remaining"], g["cap"]))))
-                if not add_run(candidates[0]):
-                    break
-            rows.append(row)
+        shelves = []
+        for block in ordered:
+            fits = []
+            for idx, shelf in enumerate(shelves):
+                needed = gap_px + block["bw"]
+                if shelf["used"] + needed <= roll_px:
+                    new_h = max(shelf["h"], block["bh"])
+                    # Prefer the shelf that adds the least height and leaves
+                    # the most regular, compact group row.
+                    fits.append((new_h - shelf["h"], roll_px - shelf["used"] - needed, idx))
+            if fits:
+                _, _, idx = min(fits)
+                shelf = shelves[idx]
+                shelf["blocks"].append(block)
+                shelf["used"] += gap_px + block["bw"]
+                shelf["h"] = max(shelf["h"], block["bh"])
+            else:
+                shelves.append({"blocks": [block], "used": block["bw"], "h": block["bh"]})
 
-        # Place rows in descending height order to keep the sheet compact.
-        rows.sort(key=lambda r: (-r["height"], -r["used"]))
-        y = 0
-        placements = []
-        row_meta = []
-        for row in rows:
-            if y + row["height"] > max_h_px:
-                return None
-            x = 0
-            row_placements = []
-            for g, count in row["segments"]:
-                for copy_no in range(count):
-                    p = {"image": g["image"], "x": x, "y": y, "w": g["w"], "h": g["h"],
-                         "name": g["item"]["name"], "copy": copy_no + 1, "rotate": g["rotate"]}
-                    placements.append(p)
-                    row_placements.append(p)
-                    x += g["w"] + gap_px
-                # retain one clear 0.5in lane between design runs and copies
-            row_meta.append({"y": y, "h": row["height"], "w": row["used"], "placements": row_placements})
-            y += row["height"] + gap_px
-        canvas_h = max(1, y - gap_px)
-        if canvas_h > max_h_px:
+        total_h = sum(sh["h"] for sh in shelves) + gap_px * max(0, len(shelves) - 1)
+        if total_h > max_h_px:
             return None
-        # Score rewards shorter sheets, then fewer distinct runs/rows with low
-        # horizontal fill penalty. No artwork is scaled or cropped.
-        run_count = sum(len(r["segments"]) for r in rows)
-        unused_area = sum(max(0, roll_px - r["used"]) * r["height"] for r in rows)
-        score = canvas_h + run_count * gap_px * 0.03 + unused_area / max(1, roll_px) * 0.015
-        return score, placements, canvas_h, row_meta
+        # Strongly prioritize compact sheet length, then orderly shelves and
+        # lower unused shelf area. This is a heuristic objective, not a proof
+        # of globally optimal nesting.
+        unused = sum(max(0, roll_px - sh["used"]) * sh["h"] for sh in shelves)
+        score = total_h + len(shelves) * gap_px * 0.025 + (unused / roll_px) * 0.012
+        return score, total_h, shelves
 
     best = None
-    if orientation_sets == [None]:
-        # For many designs, independently choose the orientation with the
-        # smaller height-per-copy estimate, then run the same row packer.
-        rotations = []
-        for item in items:
-            options = []
-            for rot in (False, True):
-                im, _, _ = oriented(item, rot)
-                if im.width <= roll_px:
-                    cap = max(1, (roll_px + gap_px) // (im.width + gap_px))
-                    options.append((math.ceil(item["qty"] / cap) * im.height, rot))
-            if not options:
-                raise ValueError(f"{item['name']} is wider than the 23-inch roll in both orientations.")
-            rotations.append(min(options)[1])
-        orientation_sets = [tuple(rotations)]
-
-    for rotations in orientation_sets:
-        for strategy in range(4):
-            result = build_candidate(rotations, strategy)
+    for selected in itertools.product(*choices_by_item):
+        for strategy in range(5):
+            result = pack_blocks(selected, strategy)
             if result is not None and (best is None or result[0] < best[0]):
-                best = result
+                best = (result[0], result[1], result[2], selected)
+
     if best is None:
-        raise ValueError("No cut-friendly layout fits under the 89.9-inch maximum. Reduce quantities or review artwork dimensions.")
-    _, placements, canvas_h, rows = best
-    return placements, canvas_h, rows, roll_px
+        raise ValueError("No grouped, cut-friendly layout fits under the 89.9-inch maximum. Reduce quantities or review artwork dimensions.")
+
+    _, canvas_h, shelves, selected = best
+    placements, row_meta = [], []
+    y = 0
+    for shelf in shelves:
+        x = 0
+        shelf_placements = []
+        for block in shelf["blocks"]:
+            item = block["item"]
+            for n in range(int(item["qty"])):
+                col = n % block["cols"]
+                row = n // block["cols"]
+                px0 = x + col * (block["w"] + gap_px)
+                py0 = y + row * (block["h"] + gap_px)
+                placement = {"image": block["image"], "x": px0, "y": py0,
+                             "w": block["w"], "h": block["h"],
+                             "name": item["name"], "copy": n + 1,
+                             "rotate": block["rotate"]}
+                placements.append(placement)
+                shelf_placements.append(placement)
+            x += block["bw"] + gap_px
+        row_meta.append({"y": y, "h": shelf["h"], "w": shelf["used"],
+                         "placements": shelf_placements})
+        y += shelf["h"] + gap_px
+    return placements, canvas_h, row_meta, roll_px
+
 def render_sheet(placements, height, width, dpi):
     canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     for p in placements:
