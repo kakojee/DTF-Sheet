@@ -5,13 +5,13 @@ from typing import List, Dict, Tuple
 import streamlit as st
 from PIL import Image, ImageOps
 
-APP_TITLE = "PrintNest · DTF Gangsheet"
+APP_TITLE = "kakojee Print Nest"
 ROLL_WIDTH_IN = 23.0
 MAX_LENGTH_IN = 89.9
 GAP_IN = 0.5
 DEFAULT_DPI = 300
 
-st.set_page_config(page_title=APP_TITLE, page_icon="🧵", layout="wide")
+st.set_page_config(page_title=APP_TITLE, layout="wide")
 
 def px(inches: float, dpi: int) -> int:
     return int(round(inches * dpi))
@@ -145,9 +145,8 @@ def main_app():
     [data-testid="stCaptionContainer"] p { color:#475467 !important; }
     [data-testid="stSidebar"] { background:#101827; }
     [data-testid="stSidebar"] * { color:#f8fafc !important; }
-    .hero { padding:clamp(18px, 3vw, 30px); border-radius:18px; background:linear-gradient(120deg,#14213d,#284b63); color:#fff; margin-bottom:18px; box-shadow:0 8px 24px rgba(16,24,40,.10); }
-    .hero h1,.hero p { color:#fff !important; }
-    .hero p { color:#e5edf6 !important; margin:7px 0 0; font-size:1.02rem; }
+    .workspace-head { padding:0 0 14px; margin:0 0 18px; border-bottom:1px solid #e4e7ec; }
+    .workspace-head h1 { margin:0; color:#101828 !important; font-weight:650; }
     .stTextInput input, .stNumberInput input, .stTextArea textarea, [data-baseweb="select"] > div, [data-testid="stFileUploader"] section { background:#fff !important; color:#172033 !important; border-color:#98a2b3 !important; }
     input, textarea { color:#172033 !important; }
     [data-testid="stFileUploader"] label, [data-testid="stFileUploader"] small { color:#344054 !important; }
@@ -162,8 +161,7 @@ def main_app():
     [data-testid="stImage"] img { max-width:100%; height:auto; border-radius:10px; }
     @media (max-width:768px) {
       .block-container { padding:.85rem .8rem 2rem; }
-      .hero { padding:18px 17px; border-radius:14px; margin-bottom:14px; }
-      .hero p { font-size:.94rem; line-height:1.45; }
+      .workspace-head { padding-bottom:12px; margin-bottom:14px; }
       h2 { font-size:1.35rem !important; } h3 { font-size:1.15rem !important; }
       [data-testid="stMetric"] { padding:10px; }
       [data-testid="stMetricLabel"] { font-size:.78rem !important; }
@@ -176,14 +174,11 @@ def main_app():
     }
     @media (max-width:420px) {
       .block-container { padding-left:.6rem; padding-right:.6rem; }
-      .hero h1 { font-size:1.55rem !important; }
       .stApp p, .stApp label { font-size:.94rem; }
     }
     </style>""", unsafe_allow_html=True)
     with st.sidebar:
-        st.markdown("# 🧵 PrintNest")
-        st.caption("DTF Gangsheet Studio")
-        st.caption("Open access · No sign-in required")
+        st.markdown("# kakojee Print Nest")
         page = st.radio("Workspace", ["New gangsheet", "Production rules", "About & setup"])
     if page == "Production rules":
         st.title("Production rules")
@@ -199,7 +194,7 @@ def main_app():
         st.warning("The current optimizer prioritizes grouped designs and straight cutting lanes. It is a heuristic, not a guaranteed globally optimal nesting solver. Review the preview before printing.")
         st.write("No sign-in is required. Orders and output files are not saved to a shared database or cloud archive; each user downloads the generated sheet.")
     else:
-        st.markdown("<div class='hero'><h1>Build your next gangsheet</h1><p>Upload customer PNGs, set quantities, and generate a cut-friendly sheet.</p></div>", unsafe_allow_html=True)
+        st.markdown("<div class='workspace-head'><h1>New gangsheet</h1></div>", unsafe_allow_html=True)
         with st.expander("Production settings", expanded=True):
             a,b,c,d = st.columns(4)
             a.metric("Roll width", "23 in")

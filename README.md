@@ -1,22 +1,24 @@
 # kakojee Print Nest
 
-A minimal, responsive, open-access Streamlit app for arranging transparent PNG artwork into DTF gangsheets.
+Minimal, responsive DTF gangsheet web app. No logo and no tagline.
 
-## Run locally
+Upload transparent PNGs, enter quantities, generate a grouped gangsheet, preview it, and download a transparent PNG.
+
+## Run
 ```bash
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## Deploy / update on Streamlit Community Cloud
-Upload the contents of this folder to the root of your GitHub repository and set the main file path to `app.py`. Commit updates to GitHub; Streamlit should redeploy automatically.
+## Deploy
+Upload the files in this folder to the root of your GitHub repository. Configure Streamlit Community Cloud to run `app.py`.
 
 No Supabase, login, or secrets are required.
 
-## Production defaults
+## Fixed production defaults
 - Roll width: 23 inches
 - Maximum length: 89.9 inches
 - Spacing: 0.5 inches
-- Transparent PNG output at 300 DPI
+- Export: transparent PNG at 300 DPI
 
-Artwork is not resized. PNGs without reliable DPI metadata are interpreted using 300 DPI; verify intended physical size before printing. Always inspect the preview and copy counts before production.
+Artwork is not resized. PNGs without reliable DPI metadata are interpreted using 300 DPI; verify intended physical size before printing.
