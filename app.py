@@ -136,32 +136,49 @@ def render_sheet(placements, height, width, dpi):
 def main_app():
     st.markdown("""<style>
     :root { color-scheme: light; }
-    .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] { background:#f4f6fa; color:#172033; }
-    .block-container { padding-top:1.4rem; padding-bottom:3rem; max-width:1400px; }
+    html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] { background:#f4f6fa; color:#172033; }
+    .stApp { background:#f4f6fa; color:#172033; }
+    .block-container { padding:1.35rem 2rem 3rem; max-width:1440px; }
     .stApp p, .stApp label, .stApp li, .stApp [data-testid="stMarkdownContainer"] { color:#172033; }
-    h1,h2,h3,h4 { color:#101828 !important; }
+    h1,h2,h3,h4 { color:#101828 !important; letter-spacing:-0.02em; }
+    h1 { font-size:clamp(1.65rem, 3vw, 2.35rem) !important; }
     [data-testid="stCaptionContainer"] p { color:#475467 !important; }
     [data-testid="stSidebar"] { background:#101827; }
     [data-testid="stSidebar"] * { color:#f8fafc !important; }
-    .hero { padding:24px 28px; border-radius:18px; background:linear-gradient(120deg,#14213d,#284b63); color:#fff; margin-bottom:18px; }
+    .hero { padding:clamp(18px, 3vw, 30px); border-radius:18px; background:linear-gradient(120deg,#14213d,#284b63); color:#fff; margin-bottom:18px; box-shadow:0 8px 24px rgba(16,24,40,.10); }
     .hero h1,.hero p { color:#fff !important; }
-    .hero p { color:#e5edf6 !important; margin:6px 0 0; }
-    .stTextInput input, .stNumberInput input, .stTextArea textarea,
-    [data-baseweb="select"] > div, [data-testid="stFileUploader"] section {
-        background:#fff !important; color:#172033 !important; border-color:#98a2b3 !important;
-    }
+    .hero p { color:#e5edf6 !important; margin:7px 0 0; font-size:1.02rem; }
+    .stTextInput input, .stNumberInput input, .stTextArea textarea, [data-baseweb="select"] > div, [data-testid="stFileUploader"] section { background:#fff !important; color:#172033 !important; border-color:#98a2b3 !important; }
     input, textarea { color:#172033 !important; }
     [data-testid="stFileUploader"] label, [data-testid="stFileUploader"] small { color:#344054 !important; }
-    .stButton button, .stDownloadButton button {
-        color:#fff !important; background:#175cd3 !important; border:1px solid #175cd3 !important;
-        border-radius:10px; font-weight:600;
-    }
+    [data-testid="stFileUploader"] section { border:1.5px dashed #98a2b3 !important; border-radius:14px !important; padding:1rem !important; background:#fff !important; }
+    .stButton button, .stDownloadButton button { color:#fff !important; background:#175cd3 !important; border:1px solid #175cd3 !important; border-radius:11px; font-weight:650; min-height:46px; padding:.55rem 1rem; white-space:normal; }
     .stButton button:hover, .stDownloadButton button:hover { background:#1849a9 !important; border-color:#1849a9 !important; }
     [data-testid="stAlert"] p { color:#172033 !important; }
-    [data-testid="stMetric"] { background:#fff; border:1px solid #d0d5dd; border-radius:12px; padding:12px; }
+    [data-testid="stMetric"] { background:#fff; border:1px solid #d0d5dd; border-radius:13px; padding:12px 14px; box-shadow:0 2px 8px rgba(16,24,40,.035); }
     [data-testid="stMetricLabel"], [data-testid="stMetricValue"] { color:#172033 !important; }
-    div[data-testid="stExpander"] { background:#fff; border:1px solid #d0d5dd; border-radius:12px; }
+    div[data-testid="stExpander"] { background:#fff; border:1px solid #d0d5dd; border-radius:13px; }
     div[data-testid="stExpander"] summary, div[data-testid="stExpander"] summary * { color:#172033 !important; }
+    [data-testid="stImage"] img { max-width:100%; height:auto; border-radius:10px; }
+    @media (max-width:768px) {
+      .block-container { padding:.85rem .8rem 2rem; }
+      .hero { padding:18px 17px; border-radius:14px; margin-bottom:14px; }
+      .hero p { font-size:.94rem; line-height:1.45; }
+      h2 { font-size:1.35rem !important; } h3 { font-size:1.15rem !important; }
+      [data-testid="stMetric"] { padding:10px; }
+      [data-testid="stMetricLabel"] { font-size:.78rem !important; }
+      [data-testid="stMetricValue"] { font-size:1.25rem !important; }
+      .stButton button, .stDownloadButton button { width:100%; min-height:50px; font-size:1rem; }
+      [data-testid="stFileUploader"] section { padding:.75rem .55rem !important; }
+      [data-testid="stSidebar"] { min-width:min(82vw, 320px); }
+      [data-testid="stImage"], [data-testid="stImage"] img { width:100% !important; height:auto !important; }
+      div[data-testid="stExpander"] summary { padding:.65rem .25rem; }
+    }
+    @media (max-width:420px) {
+      .block-container { padding-left:.6rem; padding-right:.6rem; }
+      .hero h1 { font-size:1.55rem !important; }
+      .stApp p, .stApp label { font-size:.94rem; }
+    }
     </style>""", unsafe_allow_html=True)
     with st.sidebar:
         st.markdown("# 🧵 PrintNest")
@@ -192,6 +209,7 @@ def main_app():
         uploads = st.file_uploader("Upload logo PNG files", type=["png"], accept_multiple_files=True, help="Use transparent PNG exports at the intended physical size. Original pixels are preserved.")
         if uploads:
             st.markdown("### Set print quantities")
+            st.caption("On phones, logo cards stack vertically. On computers, they display side by side.")
             items = []
             cols = st.columns(2)
             for i, up in enumerate(uploads):
