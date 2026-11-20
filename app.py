@@ -135,29 +135,43 @@ def render_sheet(placements, height, width, dpi):
 
 def main_app():
     st.markdown("""<style>
-    :root { color-scheme: light; }
-    html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] { background:#f4f6fa; color:#172033; }
-    .stApp { background:#f4f6fa; color:#172033; }
+    :root { color-scheme: light !important; }
+    html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"],
+    [data-testid="stMainBlockContainer"] { background:#F7F8FC !important; color:#172033 !important; }
+    header[data-testid="stHeader"] { background:#FFFFFF !important; border-bottom:1px solid #E4E7EC !important; }
+    [data-testid="stToolbar"] { background:transparent !important; }
     .block-container { padding:1.35rem 2rem 3rem; max-width:1440px; }
-    .stApp p, .stApp label, .stApp li, .stApp [data-testid="stMarkdownContainer"] { color:#172033; }
-    h1,h2,h3,h4 { color:#101828 !important; letter-spacing:-0.02em; }
+    .stApp, .stApp p, .stApp label, .stApp li, .stApp span,
+    [data-testid="stMarkdownContainer"], [data-testid="stMarkdownContainer"] p { color:#172033; }
+    h1,h2,h3,h4 { color:#101828 !important; letter-spacing:-.02em; }
     h1 { font-size:clamp(1.65rem, 3vw, 2.35rem) !important; }
-    [data-testid="stCaptionContainer"] p { color:#475467 !important; }
-    [data-testid="stSidebar"] { background:#101827; }
-    [data-testid="stSidebar"] * { color:#f8fafc !important; }
-    .workspace-head { padding:0 0 14px; margin:0 0 18px; border-bottom:1px solid #e4e7ec; }
+    [data-testid="stCaptionContainer"] p, .stCaption { color:#475467 !important; }
+    [data-testid="stSidebar"] { background:#101827 !important; border-right:1px solid #D0D5DD; }
+    [data-testid="stSidebar"] * { color:#F8FAFC !important; }
+    [data-testid="stSidebar"] h1 { font-size:clamp(1.25rem, 2vw, 1.65rem) !important; line-height:1.2 !important; white-space:nowrap; letter-spacing:-.04em; }
+    [data-testid="stSidebar"] [data-testid="stRadio"] label { font-size:.98rem !important; }
+    .workspace-head { padding:0 0 14px; margin:0 0 18px; border-bottom:1px solid #E4E7EC; }
     .workspace-head h1 { margin:0; color:#101828 !important; font-weight:650; }
-    .stTextInput input, .stNumberInput input, .stTextArea textarea, [data-baseweb="select"] > div, [data-testid="stFileUploader"] section { background:#fff !important; color:#172033 !important; border-color:#98a2b3 !important; }
+    /* Inputs and upload controls */
+    .stTextInput input, .stNumberInput input, .stTextArea textarea,
+    [data-baseweb="select"] > div, [data-testid="stFileUploader"] section,
+    [data-testid="stFileUploader"] section * { background:#FFFFFF !important; color:#172033 !important; }
     input, textarea { color:#172033 !important; }
-    [data-testid="stFileUploader"] label, [data-testid="stFileUploader"] small { color:#344054 !important; }
-    [data-testid="stFileUploader"] section { border:1.5px dashed #98a2b3 !important; border-radius:14px !important; padding:1rem !important; background:#fff !important; }
-    .stButton button, .stDownloadButton button { color:#fff !important; background:#175cd3 !important; border:1px solid #175cd3 !important; border-radius:11px; font-weight:650; min-height:46px; padding:.55rem 1rem; white-space:normal; }
-    .stButton button:hover, .stDownloadButton button:hover { background:#1849a9 !important; border-color:#1849a9 !important; }
-    [data-testid="stAlert"] p { color:#172033 !important; }
-    [data-testid="stMetric"] { background:#fff; border:1px solid #d0d5dd; border-radius:13px; padding:12px 14px; box-shadow:0 2px 8px rgba(16,24,40,.035); }
+    [data-testid="stFileUploader"] label, [data-testid="stFileUploader"] small,
+    [data-testid="stFileUploader"] [data-testid="stMarkdownContainer"] { color:#344054 !important; }
+    [data-testid="stFileUploader"] section { border:1.5px dashed #98A2B3 !important; border-radius:14px !important; padding:1rem !important; background:#FFFFFF !important; }
+    [data-testid="stFileUploader"] button, [data-testid="stFileUploaderDropzone"] button,
+    [data-testid="stFileUploader"] button * { background:#175CD3 !important; color:#FFFFFF !important; border-color:#175CD3 !important; }
+    [data-testid="stFileUploader"] button { border-radius:10px !important; font-weight:650 !important; }
+    .stButton button, .stDownloadButton button { color:#FFFFFF !important; background:#175CD3 !important; border:1px solid #175CD3 !important; border-radius:11px; font-weight:650; min-height:46px; padding:.55rem 1rem; white-space:normal; }
+    .stButton button *, .stDownloadButton button * { color:#FFFFFF !important; }
+    .stButton button:hover, .stDownloadButton button:hover { background:#1849A9 !important; border-color:#1849A9 !important; }
+    [data-testid="stAlert"], [data-testid="stAlert"] * { color:#172033 !important; }
+    [data-testid="stMetric"] { background:#FFFFFF !important; border:1px solid #D0D5DD; border-radius:13px; padding:12px 14px; box-shadow:0 2px 8px rgba(16,24,40,.035); }
     [data-testid="stMetricLabel"], [data-testid="stMetricValue"] { color:#172033 !important; }
-    div[data-testid="stExpander"] { background:#fff; border:1px solid #d0d5dd; border-radius:13px; }
-    div[data-testid="stExpander"] summary, div[data-testid="stExpander"] summary * { color:#172033 !important; }
+    div[data-testid="stExpander"] { background:#FFFFFF !important; border:1px solid #D0D5DD; border-radius:13px; overflow:hidden; }
+    div[data-testid="stExpander"] details, div[data-testid="stExpander"] summary,
+    div[data-testid="stExpander"] summary *, div[data-testid="stExpander"] [data-testid="stExpanderDetails"] { background:#FFFFFF !important; color:#172033 !important; }
     [data-testid="stImage"] img { max-width:100%; height:auto; border-radius:10px; }
     @media (max-width:768px) {
       .block-container { padding:.85rem .8rem 2rem; }
@@ -169,6 +183,7 @@ def main_app():
       .stButton button, .stDownloadButton button { width:100%; min-height:50px; font-size:1rem; }
       [data-testid="stFileUploader"] section { padding:.75rem .55rem !important; }
       [data-testid="stSidebar"] { min-width:min(82vw, 320px); }
+      [data-testid="stSidebar"] h1 { white-space:normal; }
       [data-testid="stImage"], [data-testid="stImage"] img { width:100% !important; height:auto !important; }
       div[data-testid="stExpander"] summary { padding:.65rem .25rem; }
     }
