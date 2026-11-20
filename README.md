@@ -1,6 +1,6 @@
-# PrintNest — DTF Gangsheet
+# kakojee Print Nest
 
-Responsive, open-access Streamlit app for transparent PNG gangsheet production. Designed for phones, tablets and desktop browsers.
+A minimal, responsive, open-access Streamlit app for arranging transparent PNG artwork into DTF gangsheets.
 
 ## Run locally
 ```bash
