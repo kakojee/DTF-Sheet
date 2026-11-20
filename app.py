@@ -59,70 +59,135 @@ def make_instances(items: List[Dict]) -> List[Dict]:
 
 
 def shelf_pack(items: List[Dict], dpi: int, gap_in: float, roll_w: float, max_len: float):
-    """Cut-friendly grouped shelf rows. Each row has one orientation per design;
-    rows remain full-width-separated by a clear transverse cutting lane."""
-    roll_px = px(roll_w, dpi)
-    gap_px = px(gap_in, dpi)
-    max_h_px = px(max_len, dpi)
-    # Candidate row groups: group by design and orientation, then choose orientation
-    # that yields fewer rows / less height while preserving contiguous same-design blocks.
-    groups = []
-    for item in items:
-        for rotate in (False, True):
-            _, wi, hi = oriented(item, rotate)
-            groups.append({"item": item, "rotate": rotate, "w": px(wi, dpi), "h": px(hi, dpi), "count": item["qty"]})
-    # For each logo choose orientation based on estimated shelf height and row capacity.
-    chosen = []
-    for item in items:
-        opts = [g for g in groups if g["item"]["id"] == item["id"]]
-        scored = []
-        for g in opts:
-            if g["w"] > roll_px:
-                score = float("inf")
-            else:
-                per_row = max(1, (roll_px + gap_px) // (g["w"] + gap_px))
-                rows = math.ceil(g["count"] / per_row)
-                score = rows * g["h"] + max(0, rows - 1) * gap_px
-            scored.append((score, g))
-        best = min(scored, key=lambda x: x[0])[1]
-        if not math.isfinite(min(scored, key=lambda x: x[0])[0]):
-            raise ValueError(f"{item['name']} is wider than the 23-inch roll in both orientations. Check the PNG export size.")
-        chosen.append(best)
-    # Group largest total row height first; rows are not interlocked.
-    chosen.sort(key=lambda g: (-(g["h"] * math.ceil(g["count"] / max(1, (roll_px + gap_px)//(g["w"]+gap_px)))), -g["h"]))
-    rows = []
-    for g in chosen:
-        remaining = g["count"]
-        while remaining:
-            cap = max(1, (roll_px + gap_px) // (g["w"] + gap_px))
-            n = min(remaining, cap)
-            row_w = n * g["w"] + (n - 1) * gap_px
-            rows.append({"item": g["item"], "rotate": g["rotate"], "n": n, "w": row_w, "h": g["h"], "placements": []})
-            remaining -= n
-    # Fill unused horizontal room with smaller groups only if the same row height
-    # accommodates them and a full 0.5in gap remains. This preserves straight lanes.
-    # Existing row is kept as a distinct cutting section; do not mix different heights.
-    rows.sort(key=lambda r: (-r["h"], -r["w"]))
-    y = 0
-    placed = []
-    for ridx, row in enumerate(rows):
-        if y + row["h"] > max_h_px:
-            raise ValueError(f"Layout exceeds the 89.9-inch maximum. Current estimate: {(y + row['h'])/dpi:.2f} inches. Reduce quantities or review logo dimensions.")
-        x = 0
-        im, _, _ = oriented(row["item"], row["rotate"])
-        for c in range(row["n"]):
-            placed.append({"image": im, "x": x, "y": y, "w": im.width, "h": im.height,
-                           "name": row["item"]["name"], "copy": c + 1, "rotate": row["rotate"]})
-            x += im.width + gap_px
-        row["placements"] = placed[-row["n"]:]
-        row["y"] = y
-        y += row["h"] + gap_px
-    canvas_h = max(1, y - gap_px)
-    if canvas_h > max_h_px:
-        raise ValueError("Layout is longer than the allowed roll length.")
-    return placed, canvas_h, rows, roll_px
+    """Orientation-aware grouped shelf packer with straight transverse cut lanes.
 
+    Each design remains a contiguous run within a row. Rows may contain multiple
+    design runs, but only when the row can accommodate them side-by-side. Every
+    row has one common top/bottom boundary, leaving a clear horizontal lane
+    between rows. The algorithm evaluates all orientation combinations for up
+    to 10 designs and several row-order strategies, then selects the shortest
+    valid sheet with a small penalty for fragmented design runs.
+    """
+    roll_px, gap_px, max_h_px = px(roll_w, dpi), px(gap_in, dpi), px(max_len, dpi)
+    if len(items) > 12:
+        # Avoid exponential search for very large uploads; use deterministic
+        # greedy orientation evaluation for the common practical case.
+        orientation_sets = [None]
+    else:
+        import itertools
+        orientation_sets = list(itertools.product((False, True), repeat=len(items)))
 
+    def build_candidate(rotations, strategy):
+        groups = []
+        for item, rotate in zip(items, rotations):
+            im, wi, hi = oriented(item, rotate)
+            w, h = im.width, im.height
+            if w > roll_px:
+                return None
+            cap = max(1, (roll_px + gap_px) // (w + gap_px))
+            groups.append({"item": item, "rotate": rotate, "image": im,
+                           "w": w, "h": h, "remaining": int(item["qty"]),
+                           "cap": cap})
+
+        # Row construction: place whole contiguous runs, then use remaining
+        # row width for another design where possible. Several orderings are
+        # tried to avoid a single greedy ordering dominating the result.
+        if strategy == 0:
+            ordered = sorted(groups, key=lambda g: (-g["h"], -g["w"], g["item"]["id"]))
+        elif strategy == 1:
+            ordered = sorted(groups, key=lambda g: (-(g["w"] * g["h"]), -g["h"]))
+        elif strategy == 2:
+            ordered = sorted(groups, key=lambda g: (g["h"], -g["w"]))
+        else:
+            ordered = sorted(groups, key=lambda g: (-g["w"], -g["h"]))
+
+        rows = []
+        # Repeatedly start a row with the next unplaced design run, then fill
+        # the remaining width with the best-fitting next design run(s).
+        while any(g["remaining"] > 0 for g in ordered):
+            available = [g for g in ordered if g["remaining"] > 0]
+            first = available[0]
+            row = {"height": first["h"], "segments": [], "used": 0}
+            def add_run(g):
+                space = roll_px - row["used"]
+                count = min(g["remaining"], g["cap"], max(0, (space + gap_px) // (g["w"] + gap_px)))
+                if count <= 0:
+                    return False
+                row["segments"].append((g, int(count)))
+                row["used"] += int(count) * g["w"] + (len(row["segments"]) - 1) * gap_px
+                row["height"] = max(row["height"], g["h"])
+                g["remaining"] -= int(count)
+                return True
+            add_run(first)
+            # Fill the remainder using designs that fit. Prefer similar heights
+            # to avoid deep unused pockets under short artwork.
+            while True:
+                candidates = [g for g in ordered if g["remaining"] > 0 and
+                              row["used"] + gap_px + g["w"] <= roll_px]
+                if not candidates:
+                    break
+                candidates.sort(key=lambda g: (-(min(g["h"], row["height"]) / max(g["h"], row["height"])),
+                                               -(g["w"] * min(g["remaining"], g["cap"]))))
+                if not add_run(candidates[0]):
+                    break
+            rows.append(row)
+
+        # Place rows in descending height order to keep the sheet compact.
+        rows.sort(key=lambda r: (-r["height"], -r["used"]))
+        y = 0
+        placements = []
+        row_meta = []
+        for row in rows:
+            if y + row["height"] > max_h_px:
+                return None
+            x = 0
+            row_placements = []
+            for g, count in row["segments"]:
+                for copy_no in range(count):
+                    p = {"image": g["image"], "x": x, "y": y, "w": g["w"], "h": g["h"],
+                         "name": g["item"]["name"], "copy": copy_no + 1, "rotate": g["rotate"]}
+                    placements.append(p)
+                    row_placements.append(p)
+                    x += g["w"] + gap_px
+                # retain one clear 0.5in lane between design runs and copies
+            row_meta.append({"y": y, "h": row["height"], "w": row["used"], "placements": row_placements})
+            y += row["height"] + gap_px
+        canvas_h = max(1, y - gap_px)
+        if canvas_h > max_h_px:
+            return None
+        # Score rewards shorter sheets, then fewer distinct runs/rows with low
+        # horizontal fill penalty. No artwork is scaled or cropped.
+        run_count = sum(len(r["segments"]) for r in rows)
+        unused_area = sum(max(0, roll_px - r["used"]) * r["height"] for r in rows)
+        score = canvas_h + run_count * gap_px * 0.03 + unused_area / max(1, roll_px) * 0.015
+        return score, placements, canvas_h, row_meta
+
+    best = None
+    if orientation_sets == [None]:
+        # For many designs, independently choose the orientation with the
+        # smaller height-per-copy estimate, then run the same row packer.
+        rotations = []
+        for item in items:
+            options = []
+            for rot in (False, True):
+                im, _, _ = oriented(item, rot)
+                if im.width <= roll_px:
+                    cap = max(1, (roll_px + gap_px) // (im.width + gap_px))
+                    options.append((math.ceil(item["qty"] / cap) * im.height, rot))
+            if not options:
+                raise ValueError(f"{item['name']} is wider than the 23-inch roll in both orientations.")
+            rotations.append(min(options)[1])
+        orientation_sets = [tuple(rotations)]
+
+    for rotations in orientation_sets:
+        for strategy in range(4):
+            result = build_candidate(rotations, strategy)
+            if result is not None and (best is None or result[0] < best[0]):
+                best = result
+    if best is None:
+        raise ValueError("No cut-friendly layout fits under the 89.9-inch maximum. Reduce quantities or review artwork dimensions.")
+    _, placements, canvas_h, rows = best
+    return placements, canvas_h, rows, roll_px
 def render_sheet(placements, height, width, dpi):
     canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     for p in placements:
@@ -206,7 +271,7 @@ def main_app():
     elif page == "About & setup":
         st.title("About this app")
         st.write("This is an open-access prototype. Anyone with the app link can upload PNGs, enter quantities, generate a grouped gangsheet, and download a transparent PNG.")
-        st.warning("The current optimizer prioritizes grouped designs and straight cutting lanes. It is a heuristic, not a guaranteed globally optimal nesting solver. Review the preview before printing.")
+        st.warning("The optimizer evaluates horizontal and exact 90° vertical orientations, groups identical copies into contiguous runs, combines compatible runs across rows, and keeps clear 0.5-inch transverse gaps. It is a cut-aware heuristic, not a guaranteed globally optimal nesting solver. Review the preview and copy counts before printing.")
         st.write("No sign-in is required. Orders and output files are not saved to a shared database or cloud archive; each user downloads the generated sheet.")
     else:
         st.markdown("<div class='workspace-head'><h1>New gangsheet</h1></div>", unsafe_allow_html=True)
@@ -242,7 +307,7 @@ def main_app():
                 st.caption(f"{len(items)} designs · {total} total copies")
                 if st.button("Generate gangsheet", type="primary", use_container_width=True):
                     try:
-                        with st.spinner("Calculating a grouped, cut-friendly layout…"):
+                        with st.spinner("Comparing orientations and cut-friendly grouped layouts…"):
                             placements, hpx, rows, wpx = shelf_pack(items, DEFAULT_DPI, GAP_IN, ROLL_WIDTH_IN, MAX_LENGTH_IN)
                             canvas, out = render_sheet(placements, hpx, wpx, DEFAULT_DPI)
                         st.session_state.last_sheet = out.getvalue()
