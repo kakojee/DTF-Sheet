@@ -1,11 +1,9 @@
-# Public deployment checklist
+# Update an existing GitHub deployment
 
-- [ ] Create GitHub repository
-- [ ] Upload `app.py` and `requirements.txt` (README optional)
-- [ ] Deploy from https://share.streamlit.io/
-- [ ] Confirm app URL opens without sign-in
-- [ ] Test PNG upload, quantity entry, preview, and PNG download
-- [ ] Verify physical dimensions, 300 DPI metadata, transparency, counts, 0.5-inch gaps, and sheet length
-- [ ] Share public URL with staff
-
-**Access warning:** Anyone with the URL can use this app. There is no authentication or private workspace. Do not put confidential artwork or customer data into a publicly accessible app unless that is acceptable for your business.
+1. Extract this ZIP on your computer.
+2. Open your existing GitHub repository.
+3. Choose **Add file → Upload files**.
+4. Upload the updated `app.py`, `requirements.txt`, `README.md`, and `.streamlit` folder.
+5. Commit the changes. Confirm `.streamlit/config.toml` is at the repository root.
+6. Streamlit Community Cloud should redeploy after the commit. If not, use the app menu and choose **Reboot app**.
+7. Test with one transparent PNG, quantity 1, then generate and download the sheet.

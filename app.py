@@ -36,7 +36,7 @@ def load_logo(upload, qty: int, idx: int) -> Dict:
     # The output sheet is 300 DPI. Preserve the full source canvas and pixel dimensions;
     # therefore the output physical size is source pixels divided by 300.
     w_in, h_in = im.width / DEFAULT_DPI, im.height / DEFAULT_DPI
-    return {"id": idx, "name": upload.name, "image": im, "qty": int(qty), "dpi": dpi,
+    return {"id": idx, "name": upload.name, "image": im, "qty": int(qty), "dpi": DEFAULT_DPI,
             "wpx": im.width, "hpx": im.height, "w_in": w_in, "h_in": h_in,
             "dpi_note": dpi_note, "hash": hashlib.sha256(raw).hexdigest()}
 
@@ -135,10 +135,33 @@ def render_sheet(placements, height, width, dpi):
 
 def main_app():
     st.markdown("""<style>
-    .stApp{background:#f6f7fb}.block-container{padding-top:1.6rem;max-width:1400px}
-    [data-testid='stSidebar']{background:#101827}.hero{padding:22px 26px;border-radius:18px;background:linear-gradient(120deg,#14213d,#284b63);color:white;margin-bottom:18px}
-    .hero h1{color:white;margin:0}.hero p{color:#dce8f2;margin:6px 0 0}
-    .metric-card{background:white;border:1px solid #e5e7eb;border-radius:14px;padding:16px}
+    :root { color-scheme: light; }
+    .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] { background:#f4f6fa; color:#172033; }
+    .block-container { padding-top:1.4rem; padding-bottom:3rem; max-width:1400px; }
+    .stApp p, .stApp label, .stApp li, .stApp [data-testid="stMarkdownContainer"] { color:#172033; }
+    h1,h2,h3,h4 { color:#101828 !important; }
+    [data-testid="stCaptionContainer"] p { color:#475467 !important; }
+    [data-testid="stSidebar"] { background:#101827; }
+    [data-testid="stSidebar"] * { color:#f8fafc !important; }
+    .hero { padding:24px 28px; border-radius:18px; background:linear-gradient(120deg,#14213d,#284b63); color:#fff; margin-bottom:18px; }
+    .hero h1,.hero p { color:#fff !important; }
+    .hero p { color:#e5edf6 !important; margin:6px 0 0; }
+    .stTextInput input, .stNumberInput input, .stTextArea textarea,
+    [data-baseweb="select"] > div, [data-testid="stFileUploader"] section {
+        background:#fff !important; color:#172033 !important; border-color:#98a2b3 !important;
+    }
+    input, textarea { color:#172033 !important; }
+    [data-testid="stFileUploader"] label, [data-testid="stFileUploader"] small { color:#344054 !important; }
+    .stButton button, .stDownloadButton button {
+        color:#fff !important; background:#175cd3 !important; border:1px solid #175cd3 !important;
+        border-radius:10px; font-weight:600;
+    }
+    .stButton button:hover, .stDownloadButton button:hover { background:#1849a9 !important; border-color:#1849a9 !important; }
+    [data-testid="stAlert"] p { color:#172033 !important; }
+    [data-testid="stMetric"] { background:#fff; border:1px solid #d0d5dd; border-radius:12px; padding:12px; }
+    [data-testid="stMetricLabel"], [data-testid="stMetricValue"] { color:#172033 !important; }
+    div[data-testid="stExpander"] { background:#fff; border:1px solid #d0d5dd; border-radius:12px; }
+    div[data-testid="stExpander"] summary, div[data-testid="stExpander"] summary * { color:#172033 !important; }
     </style>""", unsafe_allow_html=True)
     with st.sidebar:
         st.markdown("# 🧵 PrintNest")
