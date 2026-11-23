@@ -1,26 +1,17 @@
 # kakojee Print Nest
 
-Minimal, responsive DTF gangsheet web app.
-
-Upload transparent PNGs, enter quantities, and generate grouped gangsheet(s). If the complete order will not fit within one 23 × 89.9-inch sheet, the app automatically creates additional sheets, previews each one, and provides individual PNG downloads plus one ZIP containing every sheet.
-
-## Run
-```bash
-pip install -r requirements.txt
-streamlit run app.py
-```
-
-## Deploy
-Upload the files in this folder to the root of your existing GitHub repository. Configure Streamlit Community Cloud to run `app.py`.
-
-No Supabase, login, or secrets are required.
+Responsive Streamlit DTF gangsheet generator.
 
 ## Production defaults
 - Roll width: 23 inches
-- Maximum length: 89.9 inches
-- Spacing: 0.5 inches
+- Maximum sheet length: 89.9 inches
+- Gap: 0.5 inch
 - Export: transparent PNG at 300 DPI
+- Input: PNG only
 
-Artwork is not resized, cropped, recolored, or redrawn. Exact 90-degree rotation is allowed. PNGs without reliable DPI metadata are interpreted using 300 DPI; verify intended physical size before printing.
+Artwork pixels and canvas dimensions are preserved. The app may rotate artwork by exactly 90 degrees; it does not resize, recolor, redraw, or trim logos. Missing DPI metadata is assumed to be 300 DPI with a warning.
 
-The group-first packing algorithm compares multiple group shapes, orientations, and shelf arrangements. When an order exceeds one sheet, it carries remaining quantities to additional sheets and tries other design groups in available space before closing each sheet. It prioritizes contiguous design groups and clear transverse cutting lanes. This is a heuristic, not a guaranteed global optimum; always inspect every sheet preview and copy count before production.
+The packing engine groups identical copies, compares horizontal and vertical group layouts, and automatically splits orders across multiple sheets. Its search is deliberately bounded for responsive generation on larger orders. It is a production-oriented heuristic, not a guarantee of globally optimal nesting. Inspect previews, dimensions, quantities, and cutting lanes before printing.
+
+## Deploy
+Replace the root-level `app.py` in the existing GitHub repository with this package's `app.py`. Keep the existing Streamlit app and URL. Existing `requirements.txt` and `.streamlit/config.toml` are included for reference.

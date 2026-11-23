@@ -67,8 +67,6 @@ def shelf_pack(items: List[Dict], dpi: int, gap_in: float, roll_w: float, max_le
     shelf arrangements. This avoids scattering identical copies and gives
     straight, full-width transverse cut lanes between shelf rows.
     """
-    import itertools
-
     roll_px, gap_px, max_h_px = px(roll_w, dpi), px(gap_in, dpi), px(max_len, dpi)
 
     # Build possible contiguous group-block shapes for each uploaded design.
@@ -99,25 +97,24 @@ def shelf_pack(items: List[Dict], dpi: int, gap_in: float, roll_w: float, max_le
                 seen.add(key); unique.append(op)
         choices_by_item.append(unique)
 
-    # Bound the search for unusually large jobs while retaining a diverse set
-    # of tall, wide and balanced group shapes.
-    combination_count = math.prod(len(x) for x in choices_by_item)
-    if combination_count > 150000:
-        reduced = []
-        for options in choices_by_item:
-            options = sorted(options, key=lambda o: (o["bh"] + 0.12 * o["bw"],
-                                                       abs(o["bw"] - 0.72 * roll_px)))
-            keep = options[:10]
-            # Keep the most horizontal and most vertical alternatives too.
-            keep.extend([min(options, key=lambda o: o["bw"]),
-                         min(options, key=lambda o: o["bh"])])
-            unique = []; seen = set()
-            for op in keep:
-                key = (op["rotate"], op["cols"], op["rows"])
-                if key not in seen:
-                    seen.add(key); unique.append(op)
-            reduced.append(unique)
-        choices_by_item = reduced
+    # Keep a small, diverse candidate set per design. The previous version
+    # attempted the Cartesian product of every design's choices; with 31
+    # designs this can become astronomically large (even after pruning).
+    # We now use bounded coordinate descent below instead.
+    reduced = []
+    for options in choices_by_item:
+        ranked = sorted(options, key=lambda o: (o["bh"] + 0.10 * o["bw"],
+                                                  abs(o["bw"] - 0.68 * roll_px)))
+        keep = ranked[:5]
+        keep.extend([min(options, key=lambda o: o["bw"]),
+                     min(options, key=lambda o: o["bh"])])
+        unique = []; seen = set()
+        for op in keep:
+            key = (op["rotate"], op["cols"], op["rows"])
+            if key not in seen:
+                seen.add(key); unique.append(op)
+        reduced.append(unique)
+    choices_by_item = reduced
 
     def pack_blocks(blocks, strategy):
         if strategy == 0:
@@ -160,12 +157,42 @@ def shelf_pack(items: List[Dict], dpi: int, gap_in: float, roll_w: float, max_le
         score = total_h + len(shelves) * gap_px * 0.025 + (unused / roll_px) * 0.012
         return score, total_h, shelves
 
-    best = None
-    for selected in itertools.product(*choices_by_item):
-        for strategy in range(5):
+    # Start from the individually compact option, then improve one design at
+    # a time while holding the others fixed. This bounds work to roughly
+    # designs × candidates × strategies × passes, rather than multiplying
+    # candidate counts across all designs.
+    def evaluate(selected):
+        local_best = None
+        for strategy in range(3):
             result = pack_blocks(selected, strategy)
-            if result is not None and (best is None or result[0] < best[0]):
-                best = (result[0], result[1], result[2], selected)
+            if result is not None and (local_best is None or result[0] < local_best[0]):
+                local_best = (result[0], result[1], result[2], list(selected))
+        return local_best
+
+    selected = [opts[0] for opts in choices_by_item]
+    best = evaluate(selected)
+    # Two bounded refinement passes. Each candidate is evaluated against only
+    # three shelf-ordering strategies, making large multi-design jobs practical.
+    for _pass in range(2):
+        changed = False
+        for idx, options in enumerate(choices_by_item):
+            item_best = best
+            chosen_option = selected[idx]
+            for option in options:
+                if option is chosen_option:
+                    continue
+                trial = list(selected)
+                trial[idx] = option
+                candidate = evaluate(trial)
+                if candidate is not None and (item_best is None or candidate[0] < item_best[0]):
+                    item_best = candidate
+                    chosen_option = option
+            if item_best is not None and chosen_option is not selected[idx]:
+                selected[idx] = chosen_option
+                best = item_best
+                changed = True
+        if not changed:
+            break
 
     if best is None:
         raise ValueError("No grouped, cut-friendly layout fits under the 89.9-inch maximum. Reduce quantities or review artwork dimensions.")
@@ -209,11 +236,19 @@ def pack_multiple_sheets(items: List[Dict], dpi: int, gap_in: float, roll_w: flo
     remaining = [int(item["qty"]) for item in ordered]
     sheets = []
 
+    pack_cache = {}
     def try_pack(candidate_items):
+        # Binary search repeatedly asks for the same quantity combinations.
+        # Cache those exact requests so the bounded optimizer is not rerun.
+        key = tuple((int(it["id"]), int(it["qty"])) for it in candidate_items)
+        if key in pack_cache:
+            return pack_cache[key]
         try:
-            return shelf_pack(candidate_items, dpi, gap_in, roll_w, max_len)
+            result = shelf_pack(candidate_items, dpi, gap_in, roll_w, max_len)
         except ValueError:
-            return None
+            result = None
+        pack_cache[key] = result
+        return result
 
     while any(qty > 0 for qty in remaining):
         current_items = []
@@ -388,7 +423,7 @@ def main_app():
                 st.caption(f"{len(items)} designs · {total} total copies")
                 if st.button("Generate gangsheet", type="primary", use_container_width=True):
                     try:
-                        with st.spinner("Checking whether the order fits one sheet; creating additional sheets when needed…"):
+                        with st.spinner("Optimizing grouped layouts and splitting into sheets when needed…"):
                             packed_sheets = pack_multiple_sheets(items, DEFAULT_DPI, GAP_IN, ROLL_WIDTH_IN, MAX_LENGTH_IN)
                             sheet_bytes = []
                             for sheet in packed_sheets:
