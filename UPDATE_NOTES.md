@@ -1,19 +1,16 @@
-# Stability and interface update
+# Upload-total limit correction and interface refinement
 
-## Crash and memory protections
-- Uploaded PNGs are inspected as compressed bytes; full-resolution RGBA artwork is decoded one design at a time only during rendering.
-- Packing uses dimensions and 90-degree orientation flags, not retained copies of each decoded image.
-- Production sheets render on a disk-backed memory-mapped canvas rather than a 746 MB in-RAM RGBA canvas.
-- Preview images are rendered independently at display resolution; the app never opens a full-resolution output PNG to make a preview.
-- Old result/session keys are cleared on app build change and before a new generation begins.
-- PNG files are not recompressed when placed into the ZIP archive.
-- Inputs are capped at 35 megapixels per design and 100 megapixels total to avoid worker memory exhaustion.
+## Upload handling
+- Removed the incorrect 100-megapixel aggregate hard stop. A batch with 130.4 MP across multiple designs is no longer blocked just because the combined total exceeds 100 MP.
+- Kept a 35-megapixel per-file decode ceiling to limit peak memory while a single PNG is opened. This is a per-design safeguard, not a combined-order limit.
+- Larger combined batches now show an informational notice and continue; source artwork is not rescaled.
+- If any upload is rejected, generation is disabled so the app cannot silently omit one or more designs.
+- Increased the per-file upload cap to 200 MB.
 
 ## Interface
-- Updated responsive light interface with a refined dark workspace rail, clearer typography, quieter production metrics, compact design cards and a dedicated output section.
-- Quantity editing is inside a form to avoid reprocessing all 31 uploads on every quantity keystroke.
+- Updated uploaded-file chips to use a light surface and readable dark text.
+- Retained the modern light workspace and navy navigation.
 
-## Production rules retained
-- 23-inch width, 89.9-inch maximum length, 0.5-inch spacing, transparent PNG at 300 DPI.
-- Original artwork pixels are preserved; only exact 90-degree rotations are permitted.
-- Multi-sheet generation remains enabled.
+## Production settings retained
+- 23-inch roll width, 89.9-inch sheet limit, 0.5-inch cut clearance, 300 DPI transparent PNG.
+- Original artwork pixels are preserved; only exact 90-degree rotation is permitted.

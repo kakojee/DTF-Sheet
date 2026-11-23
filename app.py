@@ -6,7 +6,7 @@ import streamlit as st
 from PIL import Image, ImageOps
 
 APP_TITLE = "kakojee Print Nest"
-APP_BUILD = "2026.11.23-stable-ui-01"
+APP_BUILD = "2026.11.23-upload-total-fix-02"
 ROLL_WIDTH_IN = 23.0
 MAX_LENGTH_IN = 89.9
 GAP_IN = 0.5
@@ -527,6 +527,17 @@ def main_app():
     [data-testid="stFileUploader"] small { color:#344054 !important; }
     [data-testid="stFileUploader"] button { background:#243B5A !important; color:#FFFFFF !important; border:1px solid #243B5A !important; border-radius:9px !important; font-weight:650 !important; }
     [data-testid="stFileUploader"] button * { color:#FFFFFF !important; }
+    /* Keep uploaded-file chips light and legible in Streamlit's uploader. */
+    [data-testid="stFileUploader"] [data-testid="stFileUploaderFile"],
+    [data-testid="stFileUploader"] [data-testid="stFileUploaderFile"] > div,
+    [data-testid="stFileUploader"] [data-testid="stFileUploaderFile"] > div > div {
+      background:#F8FAFC !important; color:#344054 !important; border-color:#D0D5DD !important;
+    }
+    [data-testid="stFileUploader"] [data-testid="stFileUploaderFile"] *,
+    [data-testid="stFileUploader"] [data-testid="stFileUploaderFileName"],
+    [data-testid="stFileUploader"] [data-testid="stFileUploaderFileName"] * {
+      color:#344054 !important;
+    }
     input, textarea, [data-baseweb="input"] input { color:#182230 !important; }
     [data-testid="stNumberInput"] button { color:#344054 !important; background:#F8FAFC !important; }
     .stButton button, .stDownloadButton button, [data-testid="stFormSubmitButton"] button {
@@ -622,17 +633,17 @@ def main_app():
             if upload_errors:
                 for message in upload_errors:
                     st.error(message)
+                st.warning("Fix the rejected PNG file(s) before generating. The app will not silently omit artwork from your order.")
 
         total_decoded_pixels = sum(x["wpx"] * x["hpx"] for x in items)
         if items and total_decoded_pixels > 100_000_000:
-            st.error(
-                f"These uploads contain {total_decoded_pixels / 1_000_000:.1f} megapixels in total. "
-                "That is too much image data for a stable browser session. Please review the PNG export dimensions in CorelDRAW; do not reduce the intended physical print size."
+            st.info(
+                f"Large artwork batch: {total_decoded_pixels / 1_000_000:.1f} megapixels across {len(items)} designs. "
+                "This combined total is not a reason to reduce artwork dimensions. Designs are inspected and rendered one at a time; larger orders may take longer."
             )
-            items = []
 
         generate_clicked = False
-        if items:
+        if items and not upload_errors:
             st.markdown("<div style='height:.45rem'></div><div class='section-kicker'>02 · Quantities</div>", unsafe_allow_html=True)
             st.markdown("### Set print quantities")
             st.caption("Each design stays at its original pixel size. Quantities are applied when you press Generate gangsheet.")
@@ -658,7 +669,7 @@ def main_app():
                 st.markdown(f"**Order summary:** {len(items)} designs · {total_qty} total copies")
                 generate_clicked = st.form_submit_button("Generate gangsheet", type="primary", use_container_width=True)
 
-        if generate_clicked and items:
+        if generate_clicked and items and not upload_errors:
             # Remove previous output before starting to avoid keeping old and new
             # full-resolution PNGs and ZIPs in the session at the same time.
             for key in ("last_sheet_pngs", "last_sheet_previews", "last_sheet_summaries", "last_sheets_zip"):
