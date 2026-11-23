@@ -58,251 +58,275 @@ def make_instances(items: List[Dict]) -> List[Dict]:
     return out
 
 
-def shelf_pack(items: List[Dict], dpi: int, gap_in: float, roll_w: float, max_len: float):
-    """Group-first, cut-aware block packer.
+def shelf_pack(items: List[Dict], dpi: int, gap_in: float, roll_w: float, max_len: float, quick: bool = False):
+    """Cut-aware group packing using a MaxRects free-space search.
 
-    Each design is first made into one contiguous rectangular block of copies.
-    The block can use either exact artwork orientation and a range of grid
-    shapes (columns x rows). The block choices are then compared in several
-    shelf arrangements. This avoids scattering identical copies and gives
-    straight, full-width transverse cut lanes between shelf rows.
+    Each uploaded design remains a rectangular group of identical copies. The
+    group may use either exact artwork orientation and different row/column
+    counts. Groups are placed as rectangles into available free rectangles,
+    allowing a shorter group to leave usable space beside/below it for another
+    complete group. A clearance strip is reserved around every group so that
+    groups do not touch and remain practical to separate with scissors.
     """
     roll_px, gap_px, max_h_px = px(roll_w, dpi), px(gap_in, dpi), px(max_len, dpi)
 
-    # Build possible contiguous group-block shapes for each uploaded design.
-    choices_by_item = []
-    for item in items:
+    def make_options(item):
         options = []
+        qty = int(item["qty"])
         for rotate in (False, True):
             im, _, _ = oriented(item, rotate)
             w, h = im.size
-            if w > roll_px:
+            if w > roll_px or h > max_h_px:
                 continue
-            max_cols = min(int(item["qty"]), (roll_px + gap_px) // (w + gap_px))
+            max_cols = min(qty, max(1, (roll_px + gap_px) // (w + gap_px)))
             for cols in range(1, max_cols + 1):
-                rows = math.ceil(int(item["qty"]) / cols)
+                rows = math.ceil(qty / cols)
                 bw = cols * w + (cols - 1) * gap_px
                 bh = rows * h + (rows - 1) * gap_px
                 if bw <= roll_px and bh <= max_h_px:
                     options.append({"item": item, "rotate": rotate, "image": im,
                                     "w": w, "h": h, "cols": cols, "rows": rows,
-                                    "bw": bw, "bh": bh})
+                                    "bw": bw, "bh": bh,
+                                    "area": bw * bh})
         if not options:
             raise ValueError(f"{item['name']} cannot fit within the 23-inch roll in either orientation.")
-        # Remove duplicate block geometries for the same orientation.
-        seen = set(); unique = []
-        for op in options:
-            key = (op["rotate"], op["cols"], op["rows"], op["bw"], op["bh"])
+        # Keep a diverse set of block shapes. Include short, narrow, and balanced
+        # blocks instead of only choosing the smallest-height arrangement.
+        ranked_sets = [
+            sorted(options, key=lambda o: (o["bh"], o["bw"])),
+            sorted(options, key=lambda o: (o["bw"], o["bh"])),
+        ] if quick else [
+            sorted(options, key=lambda o: (o["bh"], o["bw"])),
+            sorted(options, key=lambda o: (o["bw"], o["bh"])),
+            sorted(options, key=lambda o: (abs(o["bw"] / max(1, o["bh"]) - 1.0), o["area"])),
+            sorted(options, key=lambda o: (o["area"], o["bh"])),
+            sorted(options, key=lambda o: (o["rotate"], o["bh"], o["bw"])),
+            sorted(options, key=lambda o: (not o["rotate"], o["bh"], o["bw"])),
+        ]
+        chosen, seen = [], set()
+        for ranked in ranked_sets:
+            for op in (ranked[0], ranked[len(ranked)//2]):
+                key = (op["rotate"], op["cols"])
+                if key not in seen:
+                    chosen.append(op); seen.add(key)
+        # Add a few intermediate column counts to give the optimizer useful
+        # alternatives without exploding search time on large quantities.
+        for op in sorted(options, key=lambda o: (o["bh"] + 0.18 * o["bw"], o["area"])):
+            key = (op["rotate"], op["cols"])
             if key not in seen:
-                seen.add(key); unique.append(op)
-        choices_by_item.append(unique)
+                chosen.append(op); seen.add(key)
+            if len(chosen) >= 8:
+                break
+        return chosen[:2] if quick else chosen[:8]
 
-    # Keep a small, diverse candidate set per design. The previous version
-    # attempted the Cartesian product of every design's choices; with 31
-    # designs this can become astronomically large (even after pruning).
-    # We now use bounded coordinate descent below instead.
-    reduced = []
-    for options in choices_by_item:
-        ranked = sorted(options, key=lambda o: (o["bh"] + 0.10 * o["bw"],
-                                                  abs(o["bw"] - 0.68 * roll_px)))
-        keep = ranked[:5]
-        keep.extend([min(options, key=lambda o: o["bw"]),
-                     min(options, key=lambda o: o["bh"])])
-        unique = []; seen = set()
-        for op in keep:
-            key = (op["rotate"], op["cols"], op["rows"])
-            if key not in seen:
-                seen.add(key); unique.append(op)
-        reduced.append(unique)
-    choices_by_item = reduced
+    choices_by_item = [make_options(item) for item in items]
 
-    def pack_blocks(blocks, strategy):
-        if strategy == 0:
-            ordered = sorted(blocks, key=lambda b: (-b["bh"], -b["bw"]))
-        elif strategy == 1:
-            ordered = sorted(blocks, key=lambda b: (-(b["bw"] * b["bh"]), -b["bh"]))
-        elif strategy == 2:
-            ordered = sorted(blocks, key=lambda b: (-b["bw"], -b["bh"]))
-        elif strategy == 3:
-            ordered = sorted(blocks, key=lambda b: (b["bh"], -b["bw"]))
-        else:
-            ordered = sorted(blocks, key=lambda b: (-min(b["bw"], b["bh"]), -max(b["bw"], b["bh"])))
+    def maxrects_pack(selected, order_strategy):
+        blocks = list(selected)
+        if order_strategy == 0:
+            blocks.sort(key=lambda b: (-max(b["bw"], b["bh"]), -b["area"]))
+        elif order_strategy == 1:
+            blocks.sort(key=lambda b: (-b["area"], -max(b["bw"], b["bh"])))
+        elif order_strategy == 2:
+            blocks.sort(key=lambda b: (-b["bh"], -b["bw"]))
+        elif order_strategy == 3:
+            blocks.sort(key=lambda b: (-b["bw"], -b["bh"]))
+        elif order_strategy == 4:
+            blocks.sort(key=lambda b: (-(b["bw"] * b["bh"]), b["bh"]))
 
-        shelves = []
-        for block in ordered:
-            fits = []
-            for idx, shelf in enumerate(shelves):
-                needed = gap_px + block["bw"]
-                if shelf["used"] + needed <= roll_px:
-                    new_h = max(shelf["h"], block["bh"])
-                    # Prefer the shelf that adds the least height and leaves
-                    # the most regular, compact group row.
-                    fits.append((new_h - shelf["h"], roll_px - shelf["used"] - needed, idx))
-            if fits:
-                _, _, idx = min(fits)
-                shelf = shelves[idx]
-                shelf["blocks"].append(block)
-                shelf["used"] += gap_px + block["bw"]
-                shelf["h"] = max(shelf["h"], block["bh"])
-            else:
-                shelves.append({"blocks": [block], "used": block["bw"], "h": block["bh"]})
+        # Free rectangles include the required clearance to the right and below.
+        free = [(0, 0, roll_px + gap_px, max_h_px + gap_px)]
+        placed = []
+        for block in blocks:
+            rw, rh = block["bw"] + gap_px, block["bh"] + gap_px
+            candidates = []
+            for fi, (fx, fy, fw, fh) in enumerate(free):
+                if rw <= fw and rh <= fh:
+                    dw, dh = fw - rw, fh - rh
+                    if order_strategy % 2:
+                        score = (min(dw, dh), max(dw, dh), fy + rh, fx)
+                    else:
+                        score = (fy + rh, min(dw, dh), max(dw, dh), fx)
+                    candidates.append((score, fi, fx, fy))
+            if not candidates:
+                return None
+            _, _, x, y = min(candidates, key=lambda c: c[0])
+            placed.append((block, x, y))
+            used_w, used_h = rw, rh
 
-        total_h = sum(sh["h"] for sh in shelves) + gap_px * max(0, len(shelves) - 1)
-        if total_h > max_h_px:
+            # MaxRects split: retain all residual rectangles, then remove
+            # contained duplicates. This makes cavities available to later groups.
+            new_free = []
+            for fx, fy, fw, fh in free:
+                if x >= fx + fw or x + used_w <= fx or y >= fy + fh or y + used_h <= fy:
+                    new_free.append((fx, fy, fw, fh)); continue
+                if x > fx:
+                    new_free.append((fx, fy, x - fx, fh))
+                if x + used_w < fx + fw:
+                    new_free.append((x + used_w, fy, fx + fw - (x + used_w), fh))
+                if y > fy:
+                    new_free.append((fx, fy, fw, y - fy))
+                if y + used_h < fy + fh:
+                    new_free.append((fx, y + used_h, fw, fy + fh - (y + used_h)))
+            pruned = []
+            for i, rect in enumerate(new_free):
+                rx, ry, rw0, rh0 = rect
+                contained = False
+                for j, other in enumerate(new_free):
+                    if i == j: continue
+                    ox, oy, ow, oh = other
+                    if rx >= ox and ry >= oy and rx + rw0 <= ox + ow and ry + rh0 <= oy + oh:
+                        contained = True; break
+                if not contained and rw0 > 0 and rh0 > 0:
+                    pruned.append(rect)
+            free = sorted(pruned, key=lambda r: r[2] * r[3], reverse=True)[:40 if quick else 100]
+
+        content_h = max(y + block["bh"] for block, x, y in placed)
+        content_w = max(x + block["bw"] for block, x, y in placed)
+        if content_h > max_h_px:
             return None
-        # Strongly prioritize compact sheet length, then orderly shelves and
-        # lower unused shelf area. This is a heuristic objective, not a proof
-        # of globally optimal nesting.
-        unused = sum(max(0, roll_px - sh["used"]) * sh["h"] for sh in shelves)
-        score = total_h + len(shelves) * gap_px * 0.025 + (unused / roll_px) * 0.012
-        return score, total_h, shelves
+        # Reward compact height, then lower occupied bounding-box area and
+        # fewer fragmented free pockets. Keep the score in pixel-height units.
+        occupied_area = sum(b["area"] for b, _, _ in placed)
+        bbox_waste = max(0, content_w * content_h - occupied_area)
+        score = content_h + (bbox_waste / max(1, roll_px)) * 0.025
+        placements, groups = [], []
+        for block, x, y in placed:
+            item = block["item"]
+            group_placements = []
+            for n in range(int(item["qty"])):
+                col, row = n % block["cols"], n // block["cols"]
+                px0 = x + col * (block["w"] + gap_px)
+                py0 = y + row * (block["h"] + gap_px)
+                p = {"image": block["image"], "x": px0, "y": py0,
+                     "w": block["w"], "h": block["h"], "name": item["name"],
+                     "copy": n + 1, "rotate": block["rotate"]}
+                placements.append(p); group_placements.append(p)
+            groups.append({"x": x, "y": y, "w": block["bw"], "h": block["bh"],
+                           "name": item["name"], "placements": group_placements})
+        return score, content_h, placements, groups
 
-    # Start from the individually compact option, then improve one design at
-    # a time while holding the others fixed. This bounds work to roughly
-    # designs × candidates × strategies × passes, rather than multiplying
-    # candidate counts across all designs.
     def evaluate(selected):
-        local_best = None
-        for strategy in range(3):
-            result = pack_blocks(selected, strategy)
-            if result is not None and (local_best is None or result[0] < local_best[0]):
-                local_best = (result[0], result[1], result[2], list(selected))
-        return local_best
+        best = None
+        for strategy in range(1 if quick else 3):
+            result = maxrects_pack(selected, strategy)
+            if result is not None and (best is None or result[0] < best[0]):
+                best = result
+        return best
 
-    selected = [opts[0] for opts in choices_by_item]
+    # Seed with the most compact-height option, then coordinate-refine the
+    # group shapes. The search is bounded and scales with designs, not the
+    # Cartesian product of every design's possible arrangements.
+    selected = [min(opts, key=lambda o: (o["bh"] + 0.10 * o["bw"], o["area"]))
+                for opts in choices_by_item]
     best = evaluate(selected)
-    # Two bounded refinement passes. Each candidate is evaluated against only
-    # three shelf-ordering strategies, making large multi-design jobs practical.
-    for _pass in range(2):
+    if best is None:
+        # Try a width-oriented seed if the first compact-height seed fails.
+        selected = [min(opts, key=lambda o: (o["bw"] + 0.10 * o["bh"], o["area"]))
+                    for opts in choices_by_item]
+        best = evaluate(selected)
+    for _pass in range(0 if quick else 1):
         changed = False
         for idx, options in enumerate(choices_by_item):
-            item_best = best
-            chosen_option = selected[idx]
+            current = selected[idx]
+            local_best = best
+            chosen = current
             for option in options:
-                if option is chosen_option:
-                    continue
-                trial = list(selected)
-                trial[idx] = option
-                candidate = evaluate(trial)
-                if candidate is not None and (item_best is None or candidate[0] < item_best[0]):
-                    item_best = candidate
-                    chosen_option = option
-            if item_best is not None and chosen_option is not selected[idx]:
-                selected[idx] = chosen_option
-                best = item_best
-                changed = True
-        if not changed:
-            break
+                if option is current: continue
+                trial = list(selected); trial[idx] = option
+                result = evaluate(trial)
+                if result is not None and (local_best is None or result[0] < local_best[0]):
+                    local_best, chosen = result, option
+            if chosen is not current:
+                selected[idx] = chosen; best = local_best; changed = True
+        if not changed: break
 
     if best is None:
         raise ValueError("No grouped, cut-friendly layout fits under the 89.9-inch maximum. Reduce quantities or review artwork dimensions.")
-
-    _, canvas_h, shelves, selected = best
-    placements, row_meta = [], []
-    y = 0
-    for shelf in shelves:
-        x = 0
-        shelf_placements = []
-        for block in shelf["blocks"]:
-            item = block["item"]
-            for n in range(int(item["qty"])):
-                col = n % block["cols"]
-                row = n // block["cols"]
-                px0 = x + col * (block["w"] + gap_px)
-                py0 = y + row * (block["h"] + gap_px)
-                placement = {"image": block["image"], "x": px0, "y": py0,
-                             "w": block["w"], "h": block["h"],
-                             "name": item["name"], "copy": n + 1,
-                             "rotate": block["rotate"]}
-                placements.append(placement)
-                shelf_placements.append(placement)
-            x += block["bw"] + gap_px
-        row_meta.append({"y": y, "h": shelf["h"], "w": shelf["used"],
-                         "placements": shelf_placements})
-        y += shelf["h"] + gap_px
+    _, canvas_h, placements, groups = best
+    # Keep legacy row metadata key for compatibility with the preview layer.
+    row_meta = [{"y": g["y"], "h": g["h"], "w": g["w"], "placements": g["placements"]}
+                for g in groups]
     return placements, canvas_h, row_meta, roll_px
-
-
 def pack_multiple_sheets(items: List[Dict], dpi: int, gap_in: float, roll_w: float, max_len: float):
-    """Automatically split an order across sheets while filling each sheet.
+    """Split oversized orders into cut-aware sheets without repeated deep searches.
 
-    For each sheet, try to place complete grouped design runs first. If a run is
-    too large, find the largest quantity that fits, then continue trying the
-    other designs in the order so their smaller groups can use remaining space.
-    Remaining quantities roll onto the next sheet. Artwork pixels are untouched.
+    The complete order is optimised first. If it does not fit, quantities are
+    allocated to each next sheet using an area budget, then each proposed sheet
+    is validated by the full grouped MaxRects packer. This avoids the old
+    per-design binary-search loop, which reran the optimizer hundreds of times
+    on large orders.
     """
     ordered = sorted(items, key=lambda it: (-(it["w_in"] * it["h_in"] * it["qty"]),
                                            -max(it["w_in"], it["h_in"])))
-    remaining = [int(item["qty"]) for item in ordered]
+    remaining = {int(item["id"]): int(item["qty"]) for item in ordered}
+    full_order = [dict(item) for item in ordered]
+    try:
+        full = shelf_pack(full_order, dpi, gap_in, roll_w, max_len)
+    except ValueError:
+        full = None
+    if full is not None:
+        placements, height, rows, width = full
+        return [{"placements": placements, "height": height, "rows": rows,
+                 "width": width, "items": full_order}]
+
+    usable_area = roll_w * max_len
+    gap_area = gap_in
     sheets = []
+    # Start high to minimise sheet count; lower the target only when the
+    # actual geometry/cutting constraints show that the proposed groups do
+    # not fit. The final packing is always checked against exact pixel bounds.
+    fill_targets = (0.94, 0.88, 0.82, 0.76, 0.70, 0.64, 0.58)
 
-    pack_cache = {}
-    def try_pack(candidate_items):
-        # Binary search repeatedly asks for the same quantity combinations.
-        # Cache those exact requests so the bounded optimizer is not rerun.
-        key = tuple((int(it["id"]), int(it["qty"])) for it in candidate_items)
-        if key in pack_cache:
-            return pack_cache[key]
-        try:
-            result = shelf_pack(candidate_items, dpi, gap_in, roll_w, max_len)
-        except ValueError:
-            result = None
-        pack_cache[key] = result
-        return result
+    while any(q > 0 for q in remaining.values()):
+        chosen_items = None
+        chosen_pack = None
+        for fill in fill_targets:
+            budget = usable_area * fill
+            used = 0.0
+            candidate = []
+            # Larger total-demand designs are considered first, while the
+            # remaining budget is also offered to smaller designs afterwards.
+            for item in ordered:
+                q_left = remaining[int(item["id"])]
+                if q_left <= 0:
+                    continue
+                unit_area = (item["w_in"] + gap_area) * (item["h_in"] + gap_area)
+                take = min(q_left, int((budget - used) // max(unit_area, 1e-9)))
+                if take > 0:
+                    part = dict(item); part["qty"] = take
+                    candidate.append(part)
+                    used += take * unit_area
+            if not candidate:
+                # A single copy is the guaranteed-progress fallback.
+                item = next(it for it in ordered if remaining[int(it["id"])] > 0)
+                part = dict(item); part["qty"] = 1
+                candidate = [part]
+            try:
+                packed = shelf_pack(candidate, dpi, gap_in, roll_w, max_len)
+            except ValueError:
+                packed = None
+            if packed is not None:
+                chosen_items, chosen_pack = candidate, packed
+                break
 
-    while any(qty > 0 for qty in remaining):
-        current_items = []
-        made_progress = False
+        if chosen_items is None:
+            # If the area estimates were too optimistic for this order, place
+            # one copy at a time until a valid sheet is found; never resize art.
+            item = next(it for it in ordered if remaining[int(it["id"])] > 0)
+            chosen_items = [dict(item)]; chosen_items[0]["qty"] = 1
+            try:
+                chosen_pack = shelf_pack(chosen_items, dpi, gap_in, roll_w, max_len)
+            except ValueError as exc:
+                raise ValueError(f"{item['name']} cannot fit within a 23-inch roll in either orientation.") from exc
 
-        for idx, item in enumerate(ordered):
-            qty_left = remaining[idx]
-            if qty_left <= 0:
-                continue
-
-            # Prefer keeping the complete remaining group on this sheet.
-            whole = dict(item); whole["qty"] = qty_left
-            whole_result = try_pack(current_items + [whole])
-            if whole_result is not None:
-                current_items.append(whole)
-                remaining[idx] = 0
-                made_progress = True
-                continue
-
-            # Otherwise, find the largest contiguous group that can be placed
-            # here, leaving the balance for the next sheet.
-            lo, hi, best_qty = 1, qty_left - 1, 0
-            while lo <= hi:
-                mid = (lo + hi) // 2
-                partial = dict(item); partial["qty"] = mid
-                if try_pack(current_items + [partial]) is not None:
-                    best_qty = mid
-                    lo = mid + 1
-                else:
-                    hi = mid - 1
-
-            if best_qty:
-                partial = dict(item); partial["qty"] = best_qty
-                current_items.append(partial)
-                remaining[idx] -= best_qty
-                made_progress = True
-
-        if not current_items or not made_progress:
-            blocked = next((ordered[i] for i, q in enumerate(remaining) if q > 0), None)
-            if blocked:
-                one = dict(blocked); one["qty"] = 1
-                if try_pack([one]) is None:
-                    raise ValueError(f"{blocked['name']} cannot fit on a 23-inch roll in either orientation, even as one copy.")
-            raise ValueError("The remaining designs could not be placed. Please review artwork dimensions and quantities.")
-
-        packed = try_pack(current_items)
-        if packed is None:
-            raise ValueError("Internal packing check failed; no sheet was exported. Please try again.")
-        placements, height, rows, width = packed
+        placements, height, rows, width = chosen_pack
         sheets.append({"placements": placements, "height": height, "rows": rows,
-                       "width": width, "items": list(current_items)})
+                       "width": width, "items": list(chosen_items)})
+        for part in chosen_items:
+            remaining[int(part["id"])] -= int(part["qty"])
 
     return sheets
-
 
 def render_sheet(placements, height, width, dpi):
     canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
