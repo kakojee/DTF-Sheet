@@ -2,7 +2,7 @@
 
 Minimal, responsive DTF gangsheet web app.
 
-Upload transparent PNGs, enter quantities, generate a grouped gangsheet, preview it, and download a transparent PNG.
+Upload transparent PNGs, enter quantities, and generate grouped gangsheet(s). If the complete order will not fit within one 23 × 89.9-inch sheet, the app automatically creates additional sheets, previews each one, and provides individual PNG downloads plus one ZIP containing every sheet.
 
 ## Run
 ```bash
@@ -23,4 +23,4 @@ No Supabase, login, or secrets are required.
 
 Artwork is not resized, cropped, recolored, or redrawn. Exact 90-degree rotation is allowed. PNGs without reliable DPI metadata are interpreted using 300 DPI; verify intended physical size before printing.
 
-The group-first packing algorithm compares multiple group shapes, orientations, and shelf arrangements. It prioritizes contiguous design groups and clear transverse cutting lanes, then sheet length. It is a heuristic, not a guaranteed global optimum; always inspect the preview and copy counts before production.
+The group-first packing algorithm compares multiple group shapes, orientations, and shelf arrangements. When an order exceeds one sheet, it carries remaining quantities to additional sheets and tries other design groups in available space before closing each sheet. It prioritizes contiguous design groups and clear transverse cutting lanes. This is a heuristic, not a guaranteed global optimum; always inspect every sheet preview and copy count before production.

@@ -1,4 +1,4 @@
-import io, os, json, math, uuid, hashlib
+import io, os, json, math, uuid, hashlib, zipfile
 from datetime import datetime, timezone
 from typing import List, Dict, Tuple
 
@@ -195,6 +195,80 @@ def shelf_pack(items: List[Dict], dpi: int, gap_in: float, roll_w: float, max_le
         y += shelf["h"] + gap_px
     return placements, canvas_h, row_meta, roll_px
 
+
+def pack_multiple_sheets(items: List[Dict], dpi: int, gap_in: float, roll_w: float, max_len: float):
+    """Automatically split an order across sheets while filling each sheet.
+
+    For each sheet, try to place complete grouped design runs first. If a run is
+    too large, find the largest quantity that fits, then continue trying the
+    other designs in the order so their smaller groups can use remaining space.
+    Remaining quantities roll onto the next sheet. Artwork pixels are untouched.
+    """
+    ordered = sorted(items, key=lambda it: (-(it["w_in"] * it["h_in"] * it["qty"]),
+                                           -max(it["w_in"], it["h_in"])))
+    remaining = [int(item["qty"]) for item in ordered]
+    sheets = []
+
+    def try_pack(candidate_items):
+        try:
+            return shelf_pack(candidate_items, dpi, gap_in, roll_w, max_len)
+        except ValueError:
+            return None
+
+    while any(qty > 0 for qty in remaining):
+        current_items = []
+        made_progress = False
+
+        for idx, item in enumerate(ordered):
+            qty_left = remaining[idx]
+            if qty_left <= 0:
+                continue
+
+            # Prefer keeping the complete remaining group on this sheet.
+            whole = dict(item); whole["qty"] = qty_left
+            whole_result = try_pack(current_items + [whole])
+            if whole_result is not None:
+                current_items.append(whole)
+                remaining[idx] = 0
+                made_progress = True
+                continue
+
+            # Otherwise, find the largest contiguous group that can be placed
+            # here, leaving the balance for the next sheet.
+            lo, hi, best_qty = 1, qty_left - 1, 0
+            while lo <= hi:
+                mid = (lo + hi) // 2
+                partial = dict(item); partial["qty"] = mid
+                if try_pack(current_items + [partial]) is not None:
+                    best_qty = mid
+                    lo = mid + 1
+                else:
+                    hi = mid - 1
+
+            if best_qty:
+                partial = dict(item); partial["qty"] = best_qty
+                current_items.append(partial)
+                remaining[idx] -= best_qty
+                made_progress = True
+
+        if not current_items or not made_progress:
+            blocked = next((ordered[i] for i, q in enumerate(remaining) if q > 0), None)
+            if blocked:
+                one = dict(blocked); one["qty"] = 1
+                if try_pack([one]) is None:
+                    raise ValueError(f"{blocked['name']} cannot fit on a 23-inch roll in either orientation, even as one copy.")
+            raise ValueError("The remaining designs could not be placed. Please review artwork dimensions and quantities.")
+
+        packed = try_pack(current_items)
+        if packed is None:
+            raise ValueError("Internal packing check failed; no sheet was exported. Please try again.")
+        placements, height, rows, width = packed
+        sheets.append({"placements": placements, "height": height, "rows": rows,
+                       "width": width, "items": list(current_items)})
+
+    return sheets
+
+
 def render_sheet(placements, height, width, dpi):
     canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     for p in placements:
@@ -278,7 +352,7 @@ def main_app():
     elif page == "About & setup":
         st.title("About this app")
         st.write("This is an open-access prototype. Anyone with the app link can upload PNGs, enter quantities, generate a grouped gangsheet, and download a transparent PNG.")
-        st.warning("The optimizer evaluates horizontal and exact 90° vertical orientations, groups identical copies into contiguous runs, combines compatible runs across rows, and keeps clear 0.5-inch transverse gaps. It is a cut-aware heuristic, not a guaranteed globally optimal nesting solver. Review the preview and copy counts before printing.")
+        st.warning("The optimizer evaluates horizontal and exact 90° vertical orientations, groups identical copies into contiguous runs, combines compatible runs across rows, keeps clear 0.5-inch transverse gaps, and automatically splits oversized orders across multiple sheets and tries other designs in leftover space before closing each sheet. It is a cut-aware heuristic, not a guaranteed globally optimal nesting solver. Review the preview and copy counts before printing.")
         st.write("No sign-in is required. Orders and output files are not saved to a shared database or cloud archive; each user downloads the generated sheet.")
     else:
         st.markdown("<div class='workspace-head'><h1>New gangsheet</h1></div>", unsafe_allow_html=True)
@@ -314,29 +388,45 @@ def main_app():
                 st.caption(f"{len(items)} designs · {total} total copies")
                 if st.button("Generate gangsheet", type="primary", use_container_width=True):
                     try:
-                        with st.spinner("Comparing orientations and cut-friendly grouped layouts…"):
-                            placements, hpx, rows, wpx = shelf_pack(items, DEFAULT_DPI, GAP_IN, ROLL_WIDTH_IN, MAX_LENGTH_IN)
-                            canvas, out = render_sheet(placements, hpx, wpx, DEFAULT_DPI)
-                        st.session_state.last_sheet = out.getvalue()
-                        st.session_state.last_meta = {"width": wpx/DEFAULT_DPI, "height": hpx/DEFAULT_DPI,
-                            "copies": total, "rows": len(rows), "placements": placements, "items": items}
-                        st.success("Gangsheet generated. Check the preview and copy counts before printing.")
+                        with st.spinner("Checking whether the order fits one sheet; creating additional sheets when needed…"):
+                            packed_sheets = pack_multiple_sheets(items, DEFAULT_DPI, GAP_IN, ROLL_WIDTH_IN, MAX_LENGTH_IN)
+                            sheet_bytes = []
+                            for sheet in packed_sheets:
+                                _, out = render_sheet(sheet["placements"], sheet["height"], sheet["width"], DEFAULT_DPI)
+                                sheet_bytes.append(out.getvalue())
+                            zip_buffer = io.BytesIO()
+                            with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                                for i, data in enumerate(sheet_bytes, start=1):
+                                    zf.writestr(f"kakojee_gangsheet_{i:02d}.png", data)
+                            st.session_state.last_sheets = sheet_bytes
+                            st.session_state.last_sheets_meta = packed_sheets
+                            st.session_state.last_sheets_zip = zip_buffer.getvalue()
+                            st.session_state.last_order_items = items
+                        st.success(f"Order arranged into {len(packed_sheets)} sheet(s). Each sheet is within the 89.9-inch maximum.")
                     except Exception as e:
                         st.error(str(e))
-        if st.session_state.get("last_sheet"):
-            meta = st.session_state.last_meta
+        if st.session_state.get("last_sheets"):
+            sheets_data = st.session_state.last_sheets
+            sheets_meta = st.session_state.last_sheets_meta
             st.markdown("---")
-            st.subheader("Gangsheet preview")
-            st.caption(f"{meta['width']:.2f} × {meta['height']:.2f} inches · {meta['copies']} copies · {meta['rows']} grouped rows · 300 DPI")
-            preview = Image.open(io.BytesIO(st.session_state.last_sheet))
-            st.image(preview, caption="Transparent background · original artwork dimensions preserved", use_container_width=True)
-            st.download_button("Download production PNG", data=st.session_state.last_sheet,
-                file_name=f"dtf_gangsheet_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png",
-                mime="image/png", type="primary", use_container_width=True)
-            st.markdown("### Copy-count check")
-            for item in meta["items"]:
-                st.write(f"- {item['name']}: **{item['qty']}** copies")
-            st.caption("Always inspect the downloaded sheet and verify dimensions/counts before sending it to print.")
+            st.subheader("Gangsheet previews")
+            st.caption(f"{len(sheets_data)} production sheet(s) · transparent PNG · 300 DPI · original artwork dimensions preserved")
+            if len(sheets_data) > 1:
+                st.info("The order did not fit on one sheet. It has been automatically split across multiple sheets; download the ZIP to get all sheets together.")
+            st.download_button("Download ALL sheets (ZIP)", data=st.session_state.last_sheets_zip,
+                file_name=f"kakojee_gangsheets_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+                mime="application/zip", type="primary", use_container_width=True)
+            for i, (data, meta) in enumerate(zip(sheets_data, sheets_meta), start=1):
+                with st.expander(f"Sheet {i} · {meta['width']/DEFAULT_DPI:.2f} × {meta['height']/DEFAULT_DPI:.2f} inches · {sum(x['qty'] for x in meta['items'])} copies", expanded=(i == 1)):
+                    preview = Image.open(io.BytesIO(data))
+                    st.image(preview, caption=f"Sheet {i} · transparent background · original artwork dimensions preserved", use_container_width=True)
+                    st.download_button(f"Download Sheet {i} PNG", data=data,
+                        file_name=f"kakojee_gangsheet_{i:02d}.png", mime="image/png",
+                        key=f"download_sheet_{i}", use_container_width=True)
+                    st.markdown("**Copy-count check**")
+                    for item in meta["items"]:
+                        st.write(f"- {item['name']}: **{item['qty']}** copies")
+            st.caption("Verify each sheet's preview, dimensions and copy counts before printing. A cut-aware heuristic is used; it does not guarantee a globally optimal nesting solution.")
 
 
 main_app()
