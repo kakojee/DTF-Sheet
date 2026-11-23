@@ -6,6 +6,7 @@ import streamlit as st
 from PIL import Image, ImageOps
 
 APP_TITLE = "kakojee Print Nest"
+APP_BUILD = "2026.11.23-stable-ui-01"
 ROLL_WIDTH_IN = 23.0
 MAX_LENGTH_IN = 89.9
 GAP_IN = 0.5
@@ -17,38 +18,73 @@ def px(inches: float, dpi: int) -> int:
     return int(round(inches * dpi))
 
 
+@st.cache_data(show_spinner=False, max_entries=100)
+def inspect_png(raw: bytes, filename: str) -> Dict:
+    """Read dimensions and make a small preview without retaining decoded art.
+
+    Only the original compressed PNG bytes are kept for packing/rendering.
+    This avoids keeping 31+ full-resolution RGBA images alive in a Streamlit
+    session while staff edit quantities.
+    """
+    try:
+        with Image.open(io.BytesIO(raw)) as source:
+            if source.format != "PNG":
+                raise ValueError("Only PNG files are accepted.")
+            width, height = source.size
+            if width <= 0 or height <= 0:
+                raise ValueError("This PNG has invalid dimensions.")
+            if width * height > 35_000_000:
+                raise ValueError(
+                    f"{filename} is very large ({width:,} × {height:,} px). "
+                    "Please check the CorelDRAW export dimensions before uploading."
+                )
+            dpi_meta = source.info.get("dpi")
+            if dpi_meta and dpi_meta[0] and float(dpi_meta[0]) > 20:
+                embedded_dpi = int(round(float(dpi_meta[0])))
+                if embedded_dpi == DEFAULT_DPI:
+                    dpi_note = f"Embedded DPI detected: {embedded_dpi}"
+                else:
+                    dpi_note = (
+                        f"Embedded DPI is {embedded_dpi}, not 300. Pixels will be preserved; "
+                        "physical output size follows pixels ÷ 300. Verify intended size before printing."
+                    )
+            else:
+                dpi_note = (
+                    "No reliable DPI metadata found; assumed 300 DPI. "
+                    "Confirm this matches the export size in CorelDRAW."
+                )
+            # Make a small upload-list thumbnail. The full-size decoded image is
+            # discarded as soon as this function returns.
+            preview = source.convert("RGBA")
+            preview.thumbnail((220, 150), Image.Resampling.LANCZOS)
+            thumb_buffer = io.BytesIO()
+            preview.save(thumb_buffer, format="PNG", optimize=False, compress_level=1)
+            preview.close()
+            return {
+                "wpx": int(width), "hpx": int(height),
+                "w_in": width / DEFAULT_DPI, "h_in": height / DEFAULT_DPI,
+                "dpi_note": dpi_note,
+                "thumbnail": thumb_buffer.getvalue(),
+                "hash": hashlib.sha256(raw).hexdigest(),
+            }
+    except (Image.UnidentifiedImageError, OSError) as exc:
+        raise ValueError(f"{filename} is not a readable PNG file.") from exc
+
+
 def load_logo(upload, qty: int, idx: int) -> Dict:
     raw = upload.getvalue()
-    im = Image.open(io.BytesIO(raw))
-    if im.format != "PNG":
-        raise ValueError("Only PNG files are accepted.")
-    im = im.convert("RGBA")
-    dpi_meta = im.info.get("dpi")
-    if dpi_meta and dpi_meta[0] and dpi_meta[0] > 20:
-        embedded_dpi = int(round(float(dpi_meta[0])))
-        if embedded_dpi == DEFAULT_DPI:
-            dpi_note = f"Embedded DPI detected: {embedded_dpi}"
-        else:
-            dpi_note = (f"Embedded DPI is {embedded_dpi}, not 300. Pixels will be preserved and the output is 300 DPI, "
-                        "so the physical print size will follow pixels ÷ 300. Verify the intended size before printing.")
-    else:
-        dpi_note = "No reliable DPI metadata found; assumed 300 DPI. Confirm this matches the export size in CorelDRAW."
-    # The output sheet is 300 DPI. Preserve the full source canvas and pixel dimensions;
-    # therefore the output physical size is source pixels divided by 300.
-    w_in, h_in = im.width / DEFAULT_DPI, im.height / DEFAULT_DPI
-    return {"id": idx, "name": upload.name, "image": im, "qty": int(qty), "dpi": DEFAULT_DPI,
-            "wpx": im.width, "hpx": im.height, "w_in": w_in, "h_in": h_in,
-            "dpi_note": dpi_note, "hash": hashlib.sha256(raw).hexdigest()}
+    meta = inspect_png(raw, upload.name)
+    return {
+        "id": idx, "name": upload.name, "raw": raw,
+        "qty": int(qty), "dpi": DEFAULT_DPI, **meta,
+    }
 
 
-def oriented(item: Dict, rotate: bool) -> Tuple[Image.Image, float, float]:
-    im = item["image"]
+def oriented_size(item: Dict, rotate: bool) -> Tuple[int, int]:
+    """Return pixel dimensions for the original or exact 90-degree orientation."""
     if rotate:
-        # Exact 90-degree transpose: no resampling or scaling.
-        im = im.transpose(Image.Transpose.ROTATE_90)
-        return im, item["h_in"], item["w_in"]
-    return im, item["w_in"], item["h_in"]
-
+        return int(item["hpx"]), int(item["wpx"])
+    return int(item["wpx"]), int(item["hpx"])
 
 def make_instances(items: List[Dict]) -> List[Dict]:
     out = []
@@ -74,8 +110,7 @@ def shelf_pack(items: List[Dict], dpi: int, gap_in: float, roll_w: float, max_le
         options = []
         qty = int(item["qty"])
         for rotate in (False, True):
-            im, _, _ = oriented(item, rotate)
-            w, h = im.size
+            w, h = oriented_size(item, rotate)
             if w > roll_px or h > max_h_px:
                 continue
             max_cols = min(qty, max(1, (roll_px + gap_px) // (w + gap_px)))
@@ -84,7 +119,7 @@ def shelf_pack(items: List[Dict], dpi: int, gap_in: float, roll_w: float, max_le
                 bw = cols * w + (cols - 1) * gap_px
                 bh = rows * h + (rows - 1) * gap_px
                 if bw <= roll_px and bh <= max_h_px:
-                    options.append({"item": item, "rotate": rotate, "image": im,
+                    options.append({"item": item, "rotate": rotate,
                                     "w": w, "h": h, "cols": cols, "rows": rows,
                                     "bw": bw, "bh": bh,
                                     "area": bw * bh})
@@ -168,18 +203,23 @@ def shelf_pack(items: List[Dict], dpi: int, gap_in: float, roll_w: float, max_le
                     new_free.append((fx, fy, fw, y - fy))
                 if y + used_h < fy + fh:
                     new_free.append((fx, y + used_h, fw, fy + fh - (y + used_h)))
-            pruned = []
-            for i, rect in enumerate(new_free):
-                rx, ry, rw0, rh0 = rect
-                contained = False
-                for j, other in enumerate(new_free):
-                    if i == j: continue
-                    ox, oy, ow, oh = other
-                    if rx >= ox and ry >= oy and rx + rw0 <= ox + ow and ry + rh0 <= oy + oh:
-                        contained = True; break
-                if not contained and rw0 > 0 and rh0 > 0:
-                    pruned.append(rect)
-            free = sorted(pruned, key=lambda r: r[2] * r[3], reverse=True)[:40 if quick else 100]
+            # Avoid quadratic containment pruning. With many uploaded designs,
+            # the previous nested comparison could dominate runtime. Free
+            # rectangles are safe residual regions even when some are contained;
+            # de-duplicate them and retain candidates by area, width and height.
+            unique = list(dict.fromkeys(
+                rect for rect in new_free if rect[2] > 0 and rect[3] > 0
+            ))
+            cap_each = 12 if quick else 24
+            keep = {}
+            for key_fn in (
+                lambda r: r[2] * r[3],
+                lambda r: r[2],
+                lambda r: r[3],
+            ):
+                for rect in sorted(unique, key=key_fn, reverse=True)[:cap_each]:
+                    keep[rect] = rect
+            free = list(keep.values())
 
         content_h = max(y + block["bh"] for block, x, y in placed)
         content_w = max(x + block["bw"] for block, x, y in placed)
@@ -198,7 +238,7 @@ def shelf_pack(items: List[Dict], dpi: int, gap_in: float, roll_w: float, max_le
                 col, row = n % block["cols"], n // block["cols"]
                 px0 = x + col * (block["w"] + gap_px)
                 py0 = y + row * (block["h"] + gap_px)
-                p = {"image": block["image"], "x": px0, "y": py0,
+                p = {"item_id": item["id"], "x": px0, "y": py0,
                      "w": block["w"], "h": block["h"], "name": item["name"],
                      "copy": n + 1, "rotate": block["rotate"]}
                 placements.append(p); group_placements.append(p)
@@ -208,7 +248,7 @@ def shelf_pack(items: List[Dict], dpi: int, gap_in: float, roll_w: float, max_le
 
     def evaluate(selected):
         best = None
-        for strategy in range(1 if quick else 3):
+        for strategy in range(1 if quick else 2):
             result = maxrects_pack(selected, strategy)
             if result is not None and (best is None or result[0] < best[0]):
                 best = result
@@ -231,7 +271,10 @@ def shelf_pack(items: List[Dict], dpi: int, gap_in: float, roll_w: float, max_le
             current = selected[idx]
             local_best = best
             chosen = current
-            for option in options:
+            # Only test a small, diverse subset of alternatives per design.
+            # The full option list is retained for initial candidate generation,
+            # but evaluating every option for every logo multiplies pack passes.
+            for option in options[:4]:
                 if option is current: continue
                 trial = list(selected); trial[idx] = option
                 result = evaluate(trial)
@@ -262,10 +305,15 @@ def pack_multiple_sheets(items: List[Dict], dpi: int, gap_in: float, roll_w: flo
     remaining = {int(item["id"]): int(item["qty"]) for item in ordered}
     full_order = [dict(item) for item in ordered]
     try:
-        full = shelf_pack(full_order, dpi, gap_in, roll_w, max_len)
+        full_quick = shelf_pack(full_order, dpi, gap_in, roll_w, max_len, quick=True)
     except ValueError:
-        full = None
-    if full is not None:
+        full_quick = None
+    if full_quick is not None:
+        # Run the deeper arrangement search only once for a sheet that fits.
+        try:
+            full = shelf_pack(full_order, dpi, gap_in, roll_w, max_len)
+        except ValueError:
+            full = full_quick
         placements, height, rows, width = full
         return [{"placements": placements, "height": height, "rows": rows,
                  "width": width, "items": full_order}]
@@ -303,11 +351,17 @@ def pack_multiple_sheets(items: List[Dict], dpi: int, gap_in: float, roll_w: flo
                 part = dict(item); part["qty"] = 1
                 candidate = [part]
             try:
-                packed = shelf_pack(candidate, dpi, gap_in, roll_w, max_len)
+                packed = shelf_pack(candidate, dpi, gap_in, roll_w, max_len, quick=True)
             except ValueError:
                 packed = None
             if packed is not None:
-                chosen_items, chosen_pack = candidate, packed
+                # Refine only the candidate that passed the quick feasibility
+                # check; do not repeat the deep search for every fill target.
+                try:
+                    refined = shelf_pack(candidate, dpi, gap_in, roll_w, max_len)
+                except ValueError:
+                    refined = packed
+                chosen_items, chosen_pack = candidate, refined
                 break
 
         if chosen_items is None:
@@ -328,164 +382,355 @@ def pack_multiple_sheets(items: List[Dict], dpi: int, gap_in: float, roll_w: flo
 
     return sheets
 
-def render_sheet(placements, height, width, dpi):
-    canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    for p in placements:
-        canvas.alpha_composite(p["image"], (p["x"], p["y"]))
-    buf = io.BytesIO()
-    canvas.save(buf, format="PNG", dpi=(dpi, dpi), optimize=True)
-    buf.seek(0)
-    return canvas, buf
+def make_preview_background(size: Tuple[int, int], tile: int = 22) -> Image.Image:
+    """Create a subtle checkerboard so transparent artwork is visible."""
+    from PIL import ImageDraw
+    preview = Image.new("RGBA", size, (247, 248, 250, 255))
+    draw = ImageDraw.Draw(preview)
+    for y in range(0, size[1], tile):
+        for x in range(0, size[0], tile):
+            if ((x // tile) + (y // tile)) % 2:
+                draw.rectangle((x, y, min(x + tile - 1, size[0]-1), min(y + tile - 1, size[1]-1)),
+                               fill=(235, 238, 243, 255))
+    return preview
+
+
+def render_sheet(placements, height, width, dpi, items_by_id):
+    """Render exact production pixels on a disk-backed canvas.
+
+    A full 23 × 89.9 inch RGBA sheet at 300 DPI is about 746 MB uncompressed.
+    It is never decoded from the finished PNG for previewing. Instead, this
+    creates a small preview directly from each source PNG placement.
+    """
+    import mmap
+    import tempfile
+
+    width, height = int(width), int(height)
+    byte_count = width * height * 4
+    if width <= 0 or height <= 0:
+        raise ValueError("The generated sheet has invalid dimensions.")
+
+    # Keep previews modest on both desktop and mobile while preserving the
+    # production export at its untouched 300-DPI pixel dimensions.
+    scale = min(1050 / width, 1750 / height, 1.0)
+    preview_size = (max(1, int(round(width * scale))), max(1, int(round(height * scale))))
+    preview = make_preview_background(preview_size)
+    with tempfile.TemporaryFile() as backing:
+        backing.truncate(byte_count)
+        mapped = mmap.mmap(backing.fileno(), byte_count, access=mmap.ACCESS_WRITE)
+        canvas = None
+        try:
+            canvas = Image.frombuffer("RGBA", (width, height), mapped,
+                                      "raw", "RGBA", 0, 1)
+            # Decode one source logo at a time, place all of its copies, then
+            # release it before moving to the next design.
+            by_item = {}
+            for placement in placements:
+                by_item.setdefault(int(placement["item_id"]), []).append(placement)
+
+            for item_id, group in by_item.items():
+                item = items_by_id[item_id]
+                with Image.open(io.BytesIO(item["raw"])) as source:
+                    source.load()
+                    artwork = source.convert("RGBA")
+                rotate = bool(group[0]["rotate"])
+                if rotate:
+                    rotated = artwork.transpose(Image.Transpose.ROTATE_90)
+                    artwork.close()
+                    artwork = rotated
+
+                preview_art = None
+                try:
+                    for placement in group:
+                        x, y = int(placement["x"]), int(placement["y"])
+                        canvas.alpha_composite(artwork, (x, y))
+                        if preview_art is None:
+                            p_size = (max(1, int(round(artwork.width * scale))),
+                                      max(1, int(round(artwork.height * scale))))
+                            preview_art = artwork.resize(p_size, Image.Resampling.LANCZOS)
+                        preview.alpha_composite(
+                            preview_art,
+                            (int(round(x * scale)), int(round(y * scale)))
+                        )
+                finally:
+                    if preview_art is not None:
+                        preview_art.close()
+                    artwork.close()
+
+            output = io.BytesIO()
+            canvas.save(output, format="PNG", dpi=(dpi, dpi),
+                        optimize=False, compress_level=1)
+            png_bytes = output.getvalue()
+            preview_output = io.BytesIO()
+            preview.save(preview_output, format="PNG", optimize=False, compress_level=1)
+            preview_bytes = preview_output.getvalue()
+            return png_bytes, preview_bytes
+        finally:
+            if canvas is not None:
+                canvas.close()
+            mapped.close()
+            preview.close()
 
 
 def main_app():
+    # Clear previous-build state once so large PIL objects left by older builds
+    # are not retained in an existing Streamlit session after deployment.
+    if st.session_state.get("_app_build") != APP_BUILD:
+        for key in list(st.session_state.keys()):
+            if key.startswith(("last_", "qty_")) or key in {"_generated_order_signature"}:
+                del st.session_state[key]
+        st.session_state["_app_build"] = APP_BUILD
+
     st.markdown("""<style>
-    :root { color-scheme: light !important; }
-    html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"],
-    [data-testid="stMainBlockContainer"] { background:#F7F8FC !important; color:#172033 !important; }
-    header[data-testid="stHeader"] { background:#FFFFFF !important; border-bottom:1px solid #E4E7EC !important; }
-    [data-testid="stToolbar"] { background:transparent !important; }
-    .block-container { padding:1.35rem 2rem 3rem; max-width:1440px; }
-    .stApp, .stApp p, .stApp label, .stApp li, .stApp span,
-    [data-testid="stMarkdownContainer"], [data-testid="stMarkdownContainer"] p { color:#172033; }
-    h1,h2,h3,h4 { color:#101828 !important; letter-spacing:-.02em; }
-    h1 { font-size:clamp(1.65rem, 3vw, 2.35rem) !important; }
-    [data-testid="stCaptionContainer"] p, .stCaption { color:#475467 !important; }
-    [data-testid="stSidebar"] { background:#101827 !important; border-right:1px solid #D0D5DD; }
-    [data-testid="stSidebar"] * { color:#F8FAFC !important; }
-    [data-testid="stSidebar"] h1 { font-size:clamp(1.25rem, 2vw, 1.65rem) !important; line-height:1.2 !important; white-space:nowrap; letter-spacing:-.04em; }
-    [data-testid="stSidebar"] [data-testid="stRadio"] label { font-size:.98rem !important; }
-    .workspace-head { padding:0 0 14px; margin:0 0 18px; border-bottom:1px solid #E4E7EC; }
-    .workspace-head h1 { margin:0; color:#101828 !important; font-weight:650; }
-    /* Inputs and upload controls */
-    .stTextInput input, .stNumberInput input, .stTextArea textarea,
-    [data-baseweb="select"] > div, [data-testid="stFileUploader"] section,
-    [data-testid="stFileUploader"] section * { background:#FFFFFF !important; color:#172033 !important; }
-    input, textarea { color:#172033 !important; }
-    [data-testid="stFileUploader"] label, [data-testid="stFileUploader"] small,
-    [data-testid="stFileUploader"] [data-testid="stMarkdownContainer"] { color:#344054 !important; }
-    [data-testid="stFileUploader"] section { border:1.5px dashed #98A2B3 !important; border-radius:14px !important; padding:1rem !important; background:#FFFFFF !important; }
-    [data-testid="stFileUploader"] button, [data-testid="stFileUploaderDropzone"] button,
-    [data-testid="stFileUploader"] button * { background:#175CD3 !important; color:#FFFFFF !important; border-color:#175CD3 !important; }
-    [data-testid="stFileUploader"] button { border-radius:10px !important; font-weight:650 !important; }
-    .stButton button, .stDownloadButton button { color:#FFFFFF !important; background:#175CD3 !important; border:1px solid #175CD3 !important; border-radius:11px; font-weight:650; min-height:46px; padding:.55rem 1rem; white-space:normal; }
-    .stButton button *, .stDownloadButton button * { color:#FFFFFF !important; }
-    .stButton button:hover, .stDownloadButton button:hover { background:#1849A9 !important; border-color:#1849A9 !important; }
-    [data-testid="stAlert"], [data-testid="stAlert"] * { color:#172033 !important; }
-    [data-testid="stMetric"] { background:#FFFFFF !important; border:1px solid #D0D5DD; border-radius:13px; padding:12px 14px; box-shadow:0 2px 8px rgba(16,24,40,.035); }
-    [data-testid="stMetricLabel"], [data-testid="stMetricValue"] { color:#172033 !important; }
-    div[data-testid="stExpander"] { background:#FFFFFF !important; border:1px solid #D0D5DD; border-radius:13px; overflow:hidden; }
-    div[data-testid="stExpander"] details, div[data-testid="stExpander"] summary,
-    div[data-testid="stExpander"] summary *, div[data-testid="stExpander"] [data-testid="stExpanderDetails"] { background:#FFFFFF !important; color:#172033 !important; }
-    [data-testid="stImage"] img { max-width:100%; height:auto; border-radius:10px; }
-    @media (max-width:768px) {
-      .block-container { padding:.85rem .8rem 2rem; }
-      .workspace-head { padding-bottom:12px; margin-bottom:14px; }
-      h2 { font-size:1.35rem !important; } h3 { font-size:1.15rem !important; }
-      [data-testid="stMetric"] { padding:10px; }
-      [data-testid="stMetricLabel"] { font-size:.78rem !important; }
-      [data-testid="stMetricValue"] { font-size:1.25rem !important; }
-      .stButton button, .stDownloadButton button { width:100%; min-height:50px; font-size:1rem; }
-      [data-testid="stFileUploader"] section { padding:.75rem .55rem !important; }
-      [data-testid="stSidebar"] { min-width:min(82vw, 320px); }
-      [data-testid="stSidebar"] h1 { white-space:normal; }
-      [data-testid="stImage"], [data-testid="stImage"] img { width:100% !important; height:auto !important; }
-      div[data-testid="stExpander"] summary { padding:.65rem .25rem; }
+    :root { color-scheme: light; }
+    html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] {
+      background:#F5F7FA !important; color:#182230 !important;
     }
-    @media (max-width:420px) {
-      .block-container { padding-left:.6rem; padding-right:.6rem; }
-      .stApp p, .stApp label { font-size:.94rem; }
+    header[data-testid="stHeader"] { background:#F5F7FA !important; }
+    [data-testid="stToolbar"] { background:transparent !important; }
+    .block-container { max-width:1440px; padding:1.6rem 2.1rem 3rem; }
+    .stApp, .stApp p, .stApp label, .stApp li,
+    [data-testid="stMarkdownContainer"], [data-testid="stMarkdownContainer"] p { color:#344054; }
+    h1,h2,h3,h4 { color:#101828 !important; letter-spacing:-.035em; }
+    h1 { font-size:clamp(1.8rem,3vw,2.45rem) !important; font-weight:720 !important; }
+    h2 { font-size:1.45rem !important; font-weight:680 !important; }
+    h3 { font-size:1.12rem !important; font-weight:650 !important; }
+    [data-testid="stCaptionContainer"] p, .stCaption { color:#667085 !important; }
+    /* Refined dark workspace rail */
+    [data-testid="stSidebar"] { background:#111C2E !important; border-right:1px solid #26364C; }
+    [data-testid="stSidebar"] * { color:#E7EDF5 !important; }
+    [data-testid="stSidebar"] > div:first-child { padding-top:1.25rem; }
+    .brand-lockup { padding:.35rem .25rem 1.35rem; border-bottom:1px solid rgba(255,255,255,.12); margin-bottom:1.1rem; }
+    .brand-kicker { color:#91A5BF !important; font-size:.68rem; font-weight:750; letter-spacing:.16em; text-transform:uppercase; margin-bottom:.55rem; }
+    .brand-name { color:#FFFFFF !important; font-size:1.55rem; font-weight:720; line-height:1.06; letter-spacing:-.045em; }
+    .brand-name span { color:#B9C9DC !important; display:block; font-weight:520; margin-top:.2rem; }
+    .brand-foot { color:#91A5BF !important; font-size:.72rem; letter-spacing:.08em; margin-top:.85rem; }
+    [data-testid="stSidebar"] [data-testid="stRadio"] label { font-size:.94rem !important; }
+    [data-testid="stSidebar"] [data-testid="stRadio"] label p { color:#E7EDF5 !important; }
+    [data-testid="stSidebar"] [data-testid="stRadio"] [aria-checked="true"] + div { color:#FFFFFF !important; }
+    [data-testid="stSidebar"] p, [data-testid="stSidebar"] label,
+    [data-testid="stSidebar"] [data-testid="stCaptionContainer"] p { color:#B8C5D6 !important; }
+    [data-testid="stSidebar"] [data-testid="stRadio"] label p { color:#E7EDF5 !important; }
+    /* Header and section rhythm */
+    .page-eyebrow { color:#64748B !important; font-size:.72rem; font-weight:750; letter-spacing:.14em; text-transform:uppercase; margin:0 0 .5rem; }
+    .page-title { font-size:clamp(1.9rem,3.4vw,2.65rem); color:#101828 !important; font-weight:760; line-height:1.05; letter-spacing:-.055em; margin:0; }
+    .page-subtitle { color:#667085 !important; font-size:1rem; margin:.65rem 0 1.35rem; line-height:1.5; }
+    .section-kicker { color:#667085 !important; font-size:.72rem; font-weight:750; letter-spacing:.12em; text-transform:uppercase; margin-bottom:.35rem; }
+    .soft-panel { background:#FFFFFF; border:1px solid #E4E7EC; border-radius:17px; padding:1.1rem 1.2rem; box-shadow:0 5px 18px rgba(16,24,40,.035); }
+    /* Streamlit metrics as quiet information cards */
+    [data-testid="stMetric"] { background:#FFFFFF !important; border:1px solid #E4E7EC; border-radius:14px; padding:13px 15px; box-shadow:0 4px 14px rgba(16,24,40,.025); }
+    [data-testid="stMetricLabel"] { color:#667085 !important; font-size:.78rem !important; }
+    [data-testid="stMetricValue"] { color:#101828 !important; font-size:1.45rem !important; font-weight:700 !important; }
+    /* Upload area and form inputs */
+    [data-testid="stFileUploader"] section { background:#FFFFFF !important; border:1.5px dashed #AAB7C7 !important; border-radius:16px !important; padding:1.15rem !important; }
+    [data-testid="stFileUploader"] section *, [data-testid="stFileUploader"] label,
+    [data-testid="stFileUploader"] small { color:#344054 !important; }
+    [data-testid="stFileUploader"] button { background:#243B5A !important; color:#FFFFFF !important; border:1px solid #243B5A !important; border-radius:9px !important; font-weight:650 !important; }
+    [data-testid="stFileUploader"] button * { color:#FFFFFF !important; }
+    input, textarea, [data-baseweb="input"] input { color:#182230 !important; }
+    [data-testid="stNumberInput"] button { color:#344054 !important; background:#F8FAFC !important; }
+    .stButton button, .stDownloadButton button, [data-testid="stFormSubmitButton"] button {
+      background:#24466F !important; color:#FFFFFF !important; border:1px solid #24466F !important;
+      border-radius:10px !important; min-height:45px; font-weight:680 !important; padding:.55rem 1rem;
+      box-shadow:0 2px 5px rgba(18,47,78,.12); transition:background .15s ease, transform .15s ease;
+    }
+    .stButton button *, .stDownloadButton button *, [data-testid="stFormSubmitButton"] button * { color:#FFFFFF !important; }
+    .stButton button:hover, .stDownloadButton button:hover, [data-testid="stFormSubmitButton"] button:hover {
+      background:#183654 !important; border-color:#183654 !important; transform:translateY(-1px);
+    }
+    [data-testid="stAlert"] { border-radius:12px !important; }
+    [data-testid="stAlert"] * { color:#182230 !important; }
+    div[data-testid="stExpander"] { background:#FFFFFF !important; border:1px solid #E4E7EC; border-radius:14px; overflow:hidden; }
+    div[data-testid="stExpander"] details, div[data-testid="stExpander"] summary,
+    div[data-testid="stExpander"] summary *, div[data-testid="stExpander"] [data-testid="stExpanderDetails"] {
+      background:#FFFFFF !important; color:#182230 !important;
+    }
+    [data-testid="stImage"] img { border-radius:9px; max-width:100%; height:auto; }
+    [data-testid="stHorizontalBlock"] { gap:1rem; }
+    @media (max-width:900px) {
+      .block-container { padding:1.15rem 1rem 2.2rem; }
+      .page-subtitle { font-size:.94rem; }
+      [data-testid="stMetric"] { padding:10px 11px; }
+      [data-testid="stMetricValue"] { font-size:1.18rem !important; }
+    }
+    @media (max-width:600px) {
+      .block-container { padding:.85rem .7rem 2rem; }
+      .brand-name { font-size:1.35rem; }
+      .stButton button, .stDownloadButton button, [data-testid="stFormSubmitButton"] button { width:100%; min-height:48px; }
+      [data-testid="stFileUploader"] section { padding:.8rem .6rem !important; }
+      [data-testid="stHorizontalBlock"] { gap:.55rem; }
     }
     </style>""", unsafe_allow_html=True)
+
     with st.sidebar:
-        st.markdown("# kakojee Print Nest")
-        page = st.radio("Workspace", ["New gangsheet", "Production rules", "About & setup"])
+        st.markdown("""<div class='brand-lockup'>
+          <div class='brand-kicker'>DTF production workspace</div>
+          <div class='brand-name'>kakojee <span>Print Nest</span></div>
+          <div class='brand-foot'>PNG · 300 DPI · OPEN ACCESS</div>
+        </div>""", unsafe_allow_html=True)
+        page = st.radio("WORKSPACE", ["New gangsheet", "Production rules", "About & setup"], label_visibility="visible")
+        st.markdown("<div style='height:1.2rem'></div>", unsafe_allow_html=True)
+        st.caption("Production defaults are locked to your print workflow.")
+
     if page == "Production rules":
-        st.title("Production rules")
-        st.info("These are the current fixed defaults. They are intentionally visible so staff can check them before production.")
-        c1,c2,c3 = st.columns(3)
-        c1.metric("Roll width", "23 in")
-        c2.metric("Maximum length", "89.9 in")
-        c3.metric("Logo spacing", "0.5 in")
-        st.write("Output: transparent PNG · 300 DPI. Artwork is never resized, recolored, redrawn, or trimmed. 90° rotation is allowed without resampling.")
+        st.markdown("<div class='page-eyebrow'>Reference</div><div class='page-title'>Production rules</div>", unsafe_allow_html=True)
+        st.markdown("<p class='page-subtitle'>Your standard output settings, kept consistent across every order.</p>", unsafe_allow_html=True)
+        a, b, c, d = st.columns(4)
+        a.metric("Roll width", "23 in")
+        b.metric("Maximum length", "89.9 in")
+        c.metric("Cutting gap", "0.5 in")
+        d.metric("Export quality", "300 DPI")
+        st.markdown("### Artwork handling")
+        st.write("Original PNG pixels are preserved. The app does not resize, recolor, redraw or trim artwork. Exact 90° rotation is allowed when it improves the layout.")
+        st.info("PNG files without reliable DPI metadata are interpreted at 300 DPI. Confirm intended print dimensions before production.")
+
     elif page == "About & setup":
-        st.title("About this app")
-        st.write("This is an open-access prototype. Anyone with the app link can upload PNGs, enter quantities, generate a grouped gangsheet, and download a transparent PNG.")
-        st.warning("The optimizer evaluates horizontal and exact 90° vertical orientations, groups identical copies into contiguous runs, combines compatible runs across rows, keeps clear 0.5-inch transverse gaps, and automatically splits oversized orders across multiple sheets and tries other designs in leftover space before closing each sheet. It is a cut-aware heuristic, not a guaranteed globally optimal nesting solver. Review the preview and copy counts before printing.")
-        st.write("No sign-in is required. Orders and output files are not saved to a shared database or cloud archive; each user downloads the generated sheet.")
+        st.markdown("<div class='page-eyebrow'>Workspace guide</div><div class='page-title'>About Print Nest</div>", unsafe_allow_html=True)
+        st.markdown("<p class='page-subtitle'>An open-access DTF gangsheet workspace for preparing production-ready transparent PNGs.</p>", unsafe_allow_html=True)
+        st.markdown("### How it works")
+        st.write("Upload your transparent PNG artwork, enter the copy quantity for each design, and generate one or more sheets automatically. The app groups identical designs, evaluates exact 90° rotations and checks the sheet-length limit.")
+        st.warning("The packing method is a bounded, cut-aware heuristic. It is not guaranteed to find the global mathematical optimum. Always inspect the sheet previews and copy-count checks before printing.")
+        st.write("No sign-in is required. Orders are processed in the active browser session; download your output before closing the page.")
+
     else:
-        st.markdown("<div class='workspace-head'><h1>New gangsheet</h1></div>", unsafe_allow_html=True)
-        with st.expander("Production settings", expanded=True):
-            a,b,c,d = st.columns(4)
-            a.metric("Roll width", "23 in")
-            b.metric("Max roll length", "89.9 in")
-            c.metric("Spacing", "0.5 in")
-            d.metric("Export", "PNG · 300 DPI")
-        uploads = st.file_uploader("Upload logo PNG files", type=["png"], accept_multiple_files=True, help="Use transparent PNG exports at the intended physical size. Original pixels are preserved.")
+        st.markdown("<div class='page-eyebrow'>Production workspace</div><div class='page-title'>Build your gangsheet</div><p class='page-subtitle'>Upload original-size PNG artwork, set quantities and prepare organised sheets for transfer printing.</p>", unsafe_allow_html=True)
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Film width", "23 in")
+        m2.metric("Sheet limit", "89.9 in")
+        m3.metric("Cut clearance", "0.5 in")
+        m4.metric("Export", "PNG · 300 DPI")
+
+        st.markdown("<div style='height:.4rem'></div><div class='section-kicker'>01 · Artwork</div>", unsafe_allow_html=True)
+        st.markdown("### Upload your designs")
+        uploads = st.file_uploader(
+            "Choose PNG files or drag them here",
+            type=["png"], accept_multiple_files=True,
+            help="Upload transparent PNG exports from CorelDRAW at the intended print size. Original pixel dimensions are preserved.",
+            key="artwork_uploads",
+        )
+
+        items = []
+        upload_errors = []
         if uploads:
-            st.markdown("### Set print quantities")
-            st.caption("On phones, logo cards stack vertically. On computers, they display side by side.")
+            for i, upload in enumerate(uploads):
+                try:
+                    item = load_logo(upload, 1, i)
+                    items.append(item)
+                except Exception as exc:
+                    upload_errors.append(f"{upload.name}: {exc}")
+            if upload_errors:
+                for message in upload_errors:
+                    st.error(message)
+
+        total_decoded_pixels = sum(x["wpx"] * x["hpx"] for x in items)
+        if items and total_decoded_pixels > 100_000_000:
+            st.error(
+                f"These uploads contain {total_decoded_pixels / 1_000_000:.1f} megapixels in total. "
+                "That is too much image data for a stable browser session. Please review the PNG export dimensions in CorelDRAW; do not reduce the intended physical print size."
+            )
             items = []
-            cols = st.columns(2)
-            for i, up in enumerate(uploads):
-                with cols[i % 2]:
-                    try:
-                        base = load_logo(up, 1, i)
-                        st.image(base["image"], caption=up.name, width=240)
-                        qty = st.number_input(f"Quantity · {up.name}", min_value=1, max_value=500, value=1, step=1, key=f"qty_{i}")
-                        base["qty"] = int(qty)
-                        items.append(base)
-                        st.caption(f"{base['wpx']} × {base['hpx']} px · approx. {base['w_in']:.2f} × {base['h_in']:.2f} in @ {base['dpi']} DPI")
-                        if "assumed" in base["dpi_note"].lower():
-                            st.warning(base["dpi_note"])
-                        else:
-                            st.caption(base["dpi_note"])
-                    except Exception as e:
-                        st.error(f"{up.name}: {e}")
-            if items:
-                total = sum(x["qty"] for x in items)
-                st.caption(f"{len(items)} designs · {total} total copies")
-                if st.button("Generate gangsheet", type="primary", use_container_width=True):
-                    try:
-                        with st.spinner("Optimizing grouped layouts and splitting into sheets when needed…"):
-                            packed_sheets = pack_multiple_sheets(items, DEFAULT_DPI, GAP_IN, ROLL_WIDTH_IN, MAX_LENGTH_IN)
-                            sheet_bytes = []
-                            for sheet in packed_sheets:
-                                _, out = render_sheet(sheet["placements"], sheet["height"], sheet["width"], DEFAULT_DPI)
-                                sheet_bytes.append(out.getvalue())
-                            zip_buffer = io.BytesIO()
-                            with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                                for i, data in enumerate(sheet_bytes, start=1):
-                                    zf.writestr(f"kakojee_gangsheet_{i:02d}.png", data)
-                            st.session_state.last_sheets = sheet_bytes
-                            st.session_state.last_sheets_meta = packed_sheets
-                            st.session_state.last_sheets_zip = zip_buffer.getvalue()
-                            st.session_state.last_order_items = items
-                        st.success(f"Order arranged into {len(packed_sheets)} sheet(s). Each sheet is within the 89.9-inch maximum.")
-                    except Exception as e:
-                        st.error(str(e))
-        if st.session_state.get("last_sheets"):
-            sheets_data = st.session_state.last_sheets
-            sheets_meta = st.session_state.last_sheets_meta
-            st.markdown("---")
-            st.subheader("Gangsheet previews")
-            st.caption(f"{len(sheets_data)} production sheet(s) · transparent PNG · 300 DPI · original artwork dimensions preserved")
-            if len(sheets_data) > 1:
-                st.info("The order did not fit on one sheet. It has been automatically split across multiple sheets; download the ZIP to get all sheets together.")
-            st.download_button("Download ALL sheets (ZIP)", data=st.session_state.last_sheets_zip,
+
+        generate_clicked = False
+        if items:
+            st.markdown("<div style='height:.45rem'></div><div class='section-kicker'>02 · Quantities</div>", unsafe_allow_html=True)
+            st.markdown("### Set print quantities")
+            st.caption("Each design stays at its original pixel size. Quantities are applied when you press Generate gangsheet.")
+            with st.form("gangsheet_order_form", clear_on_submit=False):
+                columns = st.columns(2)
+                for i, item in enumerate(items):
+                    with columns[i % 2]:
+                        with st.container(border=True):
+                            image_col, details_col = st.columns([1, 2.4])
+                            with image_col:
+                                st.image(item["thumbnail"], width=112)
+                            with details_col:
+                                st.markdown(f"**{item['name']}**")
+                                st.caption(f"{item['wpx']:,} × {item['hpx']:,} px · {item['w_in']:.2f} × {item['h_in']:.2f} in")
+                                if "assumed" in item["dpi_note"].lower():
+                                    st.caption("DPI assumed: 300 · verify size")
+                                qty = st.number_input(
+                                    "Copies", min_value=1, max_value=500, value=1, step=1,
+                                    key=f"qty_{item['hash'][:16]}",
+                                )
+                            item["qty"] = int(qty)
+                total_qty = sum(x["qty"] for x in items)
+                st.markdown(f"**Order summary:** {len(items)} designs · {total_qty} total copies")
+                generate_clicked = st.form_submit_button("Generate gangsheet", type="primary", use_container_width=True)
+
+        if generate_clicked and items:
+            # Remove previous output before starting to avoid keeping old and new
+            # full-resolution PNGs and ZIPs in the session at the same time.
+            for key in ("last_sheet_pngs", "last_sheet_previews", "last_sheet_summaries", "last_sheets_zip"):
+                st.session_state.pop(key, None)
+            try:
+                items_by_id = {int(item["id"]): item for item in items}
+                with st.status("Preparing production sheets…", expanded=True) as status:
+                    st.write("Planning grouped layouts and checking the roll-length limit…")
+                    packed_sheets = pack_multiple_sheets(items, DEFAULT_DPI, GAP_IN, ROLL_WIDTH_IN, MAX_LENGTH_IN)
+                    st.write(f"Layout planned: {len(packed_sheets)} sheet(s). Rendering at original pixel dimensions…")
+                    sheet_pngs, sheet_previews, summaries = [], [], []
+                    for sheet_index, sheet in enumerate(packed_sheets, start=1):
+                        png_bytes, preview_bytes = render_sheet(
+                            sheet["placements"], sheet["height"], sheet["width"], DEFAULT_DPI, items_by_id
+                        )
+                        sheet_pngs.append(png_bytes)
+                        sheet_previews.append(preview_bytes)
+                        summaries.append({
+                            "width": int(sheet["width"]), "height": int(sheet["height"]),
+                            "items": [{"name": x["name"], "qty": int(x["qty"])} for x in sheet["items"]],
+                            "copy_count": sum(int(x["qty"]) for x in sheet["items"]),
+                        })
+                        st.write(f"Rendered sheet {sheet_index} of {len(packed_sheets)}.")
+
+                    st.write("Preparing the combined download…")
+                    zip_buffer = io.BytesIO()
+                    with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_STORED) as archive:
+                        for i, data in enumerate(sheet_pngs, start=1):
+                            archive.writestr(f"kakojee_gangsheet_{i:02d}.png", data)
+                    st.session_state.last_sheet_pngs = sheet_pngs
+                    st.session_state.last_sheet_previews = sheet_previews
+                    st.session_state.last_sheet_summaries = summaries
+                    st.session_state.last_sheets_zip = zip_buffer.getvalue()
+                    status.update(label="Gangsheet generation complete", state="complete", expanded=False)
+                st.success(f"Ready: {len(packed_sheets)} sheet(s) · {total_qty} requested copies accounted for.")
+            except Exception as exc:
+                st.error(f"The gangsheet could not be generated: {exc}")
+
+        if st.session_state.get("last_sheet_pngs"):
+            pngs = st.session_state.last_sheet_pngs
+            previews = st.session_state.last_sheet_previews
+            summaries = st.session_state.last_sheet_summaries
+            total_copies = sum(x["copy_count"] for x in summaries)
+            total_length = sum(x["height"] for x in summaries) / DEFAULT_DPI
+            st.markdown("<div style='height:.6rem'></div><div class='section-kicker'>03 · Production output</div>", unsafe_allow_html=True)
+            st.markdown("### Your gangsheet is ready")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Sheets", len(pngs))
+            c2.metric("Copies accounted for", total_copies)
+            c3.metric("Combined film length", f"{total_length:.2f} in")
+            if len(pngs) > 1:
+                st.info("The order was automatically divided across multiple sheets. Download the ZIP to receive every production PNG.")
+            st.download_button(
+                "Download all production sheets · ZIP",
+                data=st.session_state.last_sheets_zip,
                 file_name=f"kakojee_gangsheets_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
-                mime="application/zip", type="primary", use_container_width=True)
-            for i, (data, meta) in enumerate(zip(sheets_data, sheets_meta), start=1):
-                with st.expander(f"Sheet {i} · {meta['width']/DEFAULT_DPI:.2f} × {meta['height']/DEFAULT_DPI:.2f} inches · {sum(x['qty'] for x in meta['items'])} copies", expanded=(i == 1)):
-                    preview = Image.open(io.BytesIO(data))
-                    st.image(preview, caption=f"Sheet {i} · transparent background · original artwork dimensions preserved", use_container_width=True)
-                    st.download_button(f"Download Sheet {i} PNG", data=data,
+                mime="application/zip", type="primary", use_container_width=True,
+            )
+            for i, (data, preview, summary) in enumerate(zip(pngs, previews, summaries), start=1):
+                size_w = summary["width"] / DEFAULT_DPI
+                size_h = summary["height"] / DEFAULT_DPI
+                with st.expander(f"Sheet {i:02d}  ·  {size_w:.2f} × {size_h:.2f} in  ·  {summary['copy_count']} copies", expanded=(i == 1)):
+                    st.image(preview, use_container_width=True)
+                    st.download_button(
+                        f"Download sheet {i:02d} · PNG", data=data,
                         file_name=f"kakojee_gangsheet_{i:02d}.png", mime="image/png",
-                        key=f"download_sheet_{i}", use_container_width=True)
+                        key=f"download_sheet_{APP_BUILD}_{i}", use_container_width=True,
+                    )
                     st.markdown("**Copy-count check**")
-                    for item in meta["items"]:
-                        st.write(f"- {item['name']}: **{item['qty']}** copies")
-            st.caption("Verify each sheet's preview, dimensions and copy counts before printing. A cut-aware heuristic is used; it does not guarantee a globally optimal nesting solution.")
+                    for item in summary["items"]:
+                        st.write(f"{item['name']} — **{item['qty']}**")
+            st.caption("Production PNGs are transparent, exported at 300 DPI and retain the original artwork pixels. Check every sheet before printing.")
 
 
 main_app()

@@ -1,9 +1,8 @@
-# Update the responsive PrintNest app
+# Deployment checklist
 
-1. Extract this ZIP on your computer.
-2. Open your existing GitHub repository.
-3. Choose **Add file → Upload files**.
-4. Upload the updated `app.py`, `README.md`, and `DEPLOYMENT_CHECKLIST.md`. Keep `requirements.txt` and `.streamlit/config.toml` already in the repository; include them too if missing.
-5. Commit the changes.
-6. Streamlit Community Cloud should redeploy after the commit. If it does not, open the app menu and choose **Reboot app**.
-7. Test on both phone and computer: upload a transparent PNG, set quantity, generate, inspect preview, and download the PNG.
+1. Back up the currently deployed `app.py` in GitHub or keep the previous commit available for rollback.
+2. Extract this ZIP and upload the `app.py` inside `kakojee_Print_Nest` to the root of the existing GitHub repository, replacing the existing root-level `app.py`.
+3. Keep the existing repository and Streamlit app URL. The supplied `.streamlit/config.toml` can replace the existing one if desired; keep `requirements.txt` unless your repository has additional dependencies.
+4. Commit the update and wait for Streamlit Community Cloud to redeploy.
+5. Test with a small order first, then the 31-design / 130-copy order. Verify every copy count, transparency, spacing and sheet length before production.
+6. If the app fails to start, use Streamlit app logs and revert the `app.py` commit.

@@ -1,21 +1,19 @@
-# Packing engine update
+# Stability and interface update
 
-This build keeps the existing kakojee Print Nest light theme and branding, and replaces the previous shelf-only placement routine with a grouped rectangular free-space packer.
+## Crash and memory protections
+- Uploaded PNGs are inspected as compressed bytes; full-resolution RGBA artwork is decoded one design at a time only during rendering.
+- Packing uses dimensions and 90-degree orientation flags, not retained copies of each decoded image.
+- Production sheets render on a disk-backed memory-mapped canvas rather than a 746 MB in-RAM RGBA canvas.
+- Preview images are rendered independently at display resolution; the app never opens a full-resolution output PNG to make a preview.
+- Old result/session keys are cleared on app build change and before a new generation begins.
+- PNG files are not recompressed when placed into the ZIP archive.
+- Inputs are capped at 35 megapixels per design and 100 megapixels total to avoid worker memory exhaustion.
 
-## What changed
-- Identical copies stay together in a rectangular group on each sheet.
-- Each group can use the original artwork orientation or an exact 90-degree rotation.
-- The packer can place a later group into a usable rectangular cavity beside or below an earlier group, instead of treating every row as one full-width shelf.
-- A 0.5-inch clearance is reserved between separate groups and between copies.
-- Oversized orders are split across multiple sheets automatically. The complete order is tried first; when it does not fit, quantities are budgeted per sheet and each proposed sheet is validated against the actual dimensions.
-- The multi-sheet allocator no longer repeatedly runs a deep binary-search packing routine for every design. Intermediate allocation uses area budgeting, followed by exact packing validation.
-- Artwork is not resized, trimmed, recolored, or resampled. Rotation is an exact 90-degree transpose.
+## Interface
+- Updated responsive light interface with a refined dark workspace rail, clearer typography, quieter production metrics, compact design cards and a dedicated output section.
+- Quantity editing is inside a form to avoid reprocessing all 31 uploads on every quantity keystroke.
 
-## Fixed production settings
-- Roll width: 23 inches
-- Maximum sheet length: 89.9 inches
-- Gap: 0.5 inch
-- Export: transparent PNG at 300 DPI
-
-## Important
-This is a bounded heuristic, not a mathematically guaranteed global optimum. Always review every sheet preview and verify the quantities and cutting clearances before printing. The test benchmark used synthetic artwork dimensions; actual order speed and sheet count depend on the uploaded PNG dimensions and quantities.
+## Production rules retained
+- 23-inch width, 89.9-inch maximum length, 0.5-inch spacing, transparent PNG at 300 DPI.
+- Original artwork pixels are preserved; only exact 90-degree rotations are permitted.
+- Multi-sheet generation remains enabled.
