@@ -1,0 +1,24 @@
+name: Deployment checks
+
+on:
+  push:
+    branches: [main, dual-deployment-setup]
+  pull_request:
+    branches: [main]
+
+jobs:
+  python-and-container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install app requirements
+        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+      - name: Compile app
+        run: python -m py_compile app.py
+      - name: Check dependencies
+        run: pip check
+      - name: Build container
+        run: docker build -t kakojee-print-nest:ci .
