@@ -6,7 +6,7 @@ import streamlit as st
 from PIL import Image, ImageOps
 
 APP_TITLE = "kakojee Print Nest"
-APP_BUILD = "2026.11.24-space-aware-side-lanes-03"
+APP_BUILD = "2026.11.24-space-aware-side-lanes-04"
 ROLL_WIDTH_IN = 23.0
 MAX_LENGTH_IN = 89.9
 GAP_IN = 0.5
@@ -402,7 +402,11 @@ def _row_interval_pack(items: List[Dict], dpi: int, gap_in: float, roll_w: float
                 if not row_capacities:
                     continue
 
-                columns = min(seed_capacity, max(row_capacities))
+                # Use the actual capacity of each row independently. A narrow
+                # seed gap must not cap wider side lanes farther down the sheet:
+                # the logo stays left-aligned, but each row can use all of its
+                # usable width (for example 1 copy in one row, 3 in the next).
+                columns = max(row_capacities)
                 vertical_slots = int((int(row["h"]) + gap_px) // (h + gap_px))
                 for slot in range(vertical_slots):
                     if remaining <= 0:
