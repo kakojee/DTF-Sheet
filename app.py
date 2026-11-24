@@ -6,7 +6,7 @@ import streamlit as st
 from PIL import Image, ImageOps
 
 APP_TITLE = "kakojee Print Nest"
-APP_BUILD = "2026.11.23-light-input-ui-fix-03"
+APP_BUILD = "2026.11.24-contiguous-row-fill-02"
 ROLL_WIDTH_IN = 23.0
 MAX_LENGTH_IN = 89.9
 GAP_IN = 0.5
@@ -94,7 +94,7 @@ def make_instances(items: List[Dict]) -> List[Dict]:
     return out
 
 
-def shelf_pack(items: List[Dict], dpi: int, gap_in: float, roll_w: float, max_len: float, quick: bool = False):
+def _maxrects_group_pack(items: List[Dict], dpi: int, gap_in: float, roll_w: float, max_len: float, quick: bool = False):
     """Cut-aware group packing using a MaxRects free-space search.
 
     Each uploaded design remains a rectangular group of identical copies. The
@@ -291,6 +291,331 @@ def shelf_pack(items: List[Dict], dpi: int, gap_in: float, roll_w: float, max_le
     row_meta = [{"y": g["y"], "h": g["h"], "w": g["w"], "placements": g["placements"]}
                 for g in groups]
     return placements, canvas_h, row_meta, roll_px
+
+def _row_interval_pack(items: List[Dict], dpi: int, gap_in: float, roll_w: float, max_len: float, quick: bool = False):
+    """Pack repeated logos as contiguous runs, then reuse the final row's open end.
+
+    Unlike rectangular group packing, this does not reserve the empty cells in a
+    group's final partial row. The next design can occupy that tail. If it needs
+    another row, it continues at the same x anchor, leaving the opposite side
+    available for the next design. Every placement remains a separate rectangle
+    with the configured clearance; no artwork pixels are changed.
+    """
+    roll_px = px(roll_w, dpi)
+    gap_px = px(gap_in, dpi)
+    max_h_px = px(max_len, dpi)
+
+    def clone_rows(rows):
+        return [
+            {
+                "y": row["y"], "h": row["h"],
+                "placements": list(row["placements"]),
+            }
+            for row in rows
+        ]
+
+    def free_intervals(row):
+        occupied = sorted(row["placements"], key=lambda p: (p["x"], p["w"]))
+        intervals = []
+        cursor = 0
+        for p in occupied:
+            left = max(0, int(p["x"]) - gap_px)
+            if left > cursor:
+                intervals.append((cursor, left))
+            cursor = max(cursor, int(p["x"]) + int(p["w"]) + gap_px)
+        if cursor < roll_px:
+            intervals.append((cursor, roll_px))
+        return intervals
+
+    def row_used_right(row):
+        return max((int(p["x"]) + int(p["w"]) for p in row["placements"]), default=0)
+
+    def state_metrics(rows):
+        if not rows:
+            return 0, 0.0, 0
+        height = max(row["y"] + row["h"] for row in rows)
+        free_area = 0
+        for row in rows:
+            free_width = sum(hi - lo for lo, hi in free_intervals(row))
+            free_area += free_width * row["h"]
+        rotated_ids = {
+            p["item_id"] for row in rows for p in row["placements"] if p.get("rotate")
+        }
+        return height, free_area / max(1, roll_px), len(rotated_ids)
+
+    def state_score(rows):
+        height, free_equiv, rotated_count = state_metrics(rows)
+        # Sheet length is the primary objective. The secondary term favours
+        # layouts that use open row ends, while a tiny rotation tie-breaker
+        # avoids turning artwork unless the layout actually benefits.
+        return height + 0.28 * free_equiv + (0.02 * dpi * rotated_count), height, free_equiv, rotated_count
+
+    def add_item_variants(rows, item, rotate, max_variants=5):
+        """Return several safe ways to place one design as a contiguous run.
+
+        The full-quantity fit options may use an open interval on any existing
+        row. Partial use is allowed on the current bottom row; overflow then
+        continues at the same x anchor in rows below. A fresh-row option is
+        always retained so a tiny tail cannot force a long, inefficient column.
+        """
+        w, h = oriented_size(item, rotate)
+        qty = int(item["qty"])
+        if w > roll_px or h > max_h_px or qty < 1:
+            return []
+
+        variants = []
+
+        def build_from(row_index, lo, hi, partial_allowed):
+            trial = clone_rows(rows)
+            target = trial[row_index]
+            capacity = int((hi - lo + gap_px) // (w + gap_px))
+            if capacity <= 0 or (not partial_allowed and capacity < qty):
+                return None
+            take = min(qty, capacity)
+            remaining = qty - take
+            copy_number = 1
+            for j in range(take):
+                x = lo + j * (w + gap_px)
+                target["placements"].append({
+                    "item_id": int(item["id"]), "x": x, "y": int(target["y"]),
+                    "w": int(w), "h": int(h), "name": item["name"],
+                    "copy": copy_number, "rotate": bool(rotate),
+                })
+                copy_number += 1
+            anchor_x = lo
+            while remaining > 0:
+                next_y = max(r["y"] + r["h"] for r in trial) + gap_px
+                new_row = {"y": next_y, "h": h, "placements": []}
+                trial.append(new_row)
+                continuation_capacity = int((roll_px - anchor_x + gap_px) // (w + gap_px))
+                if continuation_capacity <= 0:
+                    anchor_x = 0
+                    continuation_capacity = int((roll_px + gap_px) // (w + gap_px))
+                batch = min(remaining, continuation_capacity)
+                for j in range(batch):
+                    x = anchor_x + j * (w + gap_px)
+                    new_row["placements"].append({
+                        "item_id": int(item["id"]), "x": x, "y": int(new_row["y"]),
+                        "w": int(w), "h": int(h), "name": item["name"],
+                        "copy": copy_number, "rotate": bool(rotate),
+                    })
+                    copy_number += 1
+                remaining -= batch
+            return trial
+
+        # Search older rows only when this entire design can fit in one open
+        # interval. That fills otherwise stranded gaps without scattering a
+        # design across distant rows.
+        for row_index in range(len(rows) - 1, -1, -1):
+            row = rows[row_index]
+            if h > row["h"]:
+                continue
+            is_bottom_row = row_index == len(rows) - 1
+            for lo, hi in free_intervals(row):
+                capacity = int((hi - lo + gap_px) // (w + gap_px))
+                if capacity <= 0:
+                    continue
+                if not is_bottom_row and capacity < qty:
+                    continue
+                trial = build_from(row_index, lo, hi, partial_allowed=is_bottom_row)
+                if trial is not None:
+                    variants.append(trial)
+
+        # Fresh-row alternative: preserve an older tail for a later, smaller
+        # design if using it now would force the current design into many rows.
+        next_y = max((r["y"] + r["h"] for r in rows), default=0)
+        if rows:
+            next_y += gap_px
+        fresh = clone_rows(rows)
+        fresh_row = {"y": next_y, "h": h, "placements": []}
+        fresh.append(fresh_row)
+        full_capacity = int((roll_px + gap_px) // (w + gap_px))
+        remaining = qty
+        copy_number = 1
+        while remaining > 0:
+            current = fresh[-1]
+            batch = min(remaining, full_capacity)
+            for j in range(batch):
+                x = j * (w + gap_px)
+                current["placements"].append({
+                    "item_id": int(item["id"]), "x": x, "y": int(current["y"]),
+                    "w": int(w), "h": int(h), "name": item["name"],
+                    "copy": copy_number, "rotate": bool(rotate),
+                })
+                copy_number += 1
+            remaining -= batch
+            if remaining > 0:
+                fresh.append({
+                    "y": current["y"] + current["h"] + gap_px,
+                    "h": h, "placements": [],
+                })
+        variants.append(fresh)
+
+        # Remove duplicate placements and keep a small, diverse candidate set.
+        unique = {}
+        for trial in variants:
+            signature = tuple(sorted(
+                (p["item_id"], p["copy"], p["x"], p["y"], p["rotate"])
+                for row in trial for p in row["placements"]
+            ))
+            unique[signature] = trial
+        ranked = sorted(unique.values(), key=state_score)
+        return ranked[:max_variants]
+
+    def orientation_options(item):
+        opts = []
+        for rotate in (False, True):
+            w, h = oriented_size(item, rotate)
+            if w <= roll_px and h <= max_h_px:
+                opts.append(rotate)
+        return opts
+
+    def estimated(item):
+        qty = int(item["qty"])
+        options = []
+        for rotate in orientation_options(item):
+            w, h = oriented_size(item, rotate)
+            cap = int((roll_px + gap_px) // (w + gap_px))
+            rows_needed = math.ceil(qty / max(1, cap))
+            est_len = rows_needed * h + max(0, rows_needed - 1) * gap_px
+            options.append((est_len, h, w))
+        if not options:
+            raise ValueError(f"{item['name']} cannot fit within the 23-inch roll in either orientation.")
+        best_len = min(x[0] for x in options)
+        area_demand = int(item["wpx"]) * int(item["hpx"]) * qty
+        return best_len, area_demand, max(int(item["wpx"]), int(item["hpx"])), min(int(item["wpx"]), int(item["hpx"]))
+
+    # Several bounded design orders prevent the upload order from dictating the
+    # sheet. Large groups are normally placed first; smaller logos then use the
+    # partial final rows and open side lanes where their dimensions permit.
+    indexed = list(enumerate(items))
+    estimates = {int(it["id"]): estimated(it) for it in items}
+    order_specs = [
+        lambda pair: pair[0],
+        lambda pair: (-estimates[int(pair[1]["id"])][1], -estimates[int(pair[1]["id"])][0]),
+        lambda pair: (-estimates[int(pair[1]["id"])][0], -estimates[int(pair[1]["id"])][1]),
+    ]
+    if not quick:
+        order_specs.extend([
+            lambda pair: (-estimates[int(pair[1]["id"])][2], -estimates[int(pair[1]["id"])][3]),
+            lambda pair: (-int(pair[1]["qty"]), -estimates[int(pair[1]["id"])][1]),
+            lambda pair: (estimates[int(pair[1]["id"])][1], estimates[int(pair[1]["id"])][0]),
+        ])
+
+    orderings = []
+    seen_orders = set()
+    for spec in order_specs:
+        ordered = [pair[1] for pair in sorted(indexed, key=spec)]
+        signature = tuple(int(x["id"]) for x in ordered)
+        if signature not in seen_orders:
+            orderings.append(ordered)
+            seen_orders.add(signature)
+
+    best_state = None
+    best_key = None
+    for ordered in orderings:
+        rows = []
+        failed = False
+        for item_index, item in enumerate(ordered):
+            best_trial = None
+            best_trial_key = None
+            for rotate in orientation_options(item):
+                variants = add_item_variants(rows, item, rotate, max_variants=(3 if quick else 5))
+                for trial_rows in variants:
+                    current_key = state_score(trial_rows)
+                    projected_key = current_key
+                    # One-step lookahead compares the next logo against every
+                    # promising open interval, not only the most recent row.
+                    if item_index + 1 < len(ordered):
+                        next_item = ordered[item_index + 1]
+                        future_keys = []
+                        for next_rotate in orientation_options(next_item):
+                            future_rows_list = add_item_variants(
+                                trial_rows, next_item, next_rotate,
+                                max_variants=(2 if quick else 3),
+                            )
+                            future_keys.extend(state_score(fr) for fr in future_rows_list)
+                        if future_keys:
+                            projected_key = min(future_keys)
+                    key = (projected_key[0], current_key[0],
+                           projected_key[1], projected_key[2], projected_key[3])
+                    if best_trial_key is None or key < best_trial_key:
+                        best_trial, best_trial_key = trial_rows, key
+            if best_trial is None:
+                failed = True
+                break
+            rows = best_trial
+        if failed or not rows:
+            continue
+        height = max(r["y"] + r["h"] for r in rows)
+        if height > max_h_px:
+            continue
+        key = state_score(rows)
+        if best_key is None or key < best_key:
+            best_state, best_key = rows, key
+
+    if best_state is None:
+        return None
+
+    placements = [p for row in best_state for p in row["placements"]]
+    height = max(row["y"] + row["h"] for row in best_state)
+    row_meta = [
+        {"y": row["y"], "h": row["h"], "w": max((p["x"] + p["w"] for p in row["placements"]), default=0),
+         "placements": row["placements"]}
+        for row in best_state
+    ]
+    return placements, height, row_meta, roll_px
+
+
+def _layout_quality(pack_result, roll_px: int, dpi: int):
+    """Compare layouts by length first, then unused horizontal pockets and rotation."""
+    placements, height, _rows, _width = pack_result
+    by_y = {}
+    for p in placements:
+        row = by_y.setdefault(int(p["y"]), {"h": 0, "placements": []})
+        row["h"] = max(row["h"], int(p["h"]))
+        row["placements"].append(p)
+    free_area = 0
+    for row in by_y.values():
+        occupied = sorted(row["placements"], key=lambda p: p["x"])
+        cursor = 0
+        free_width = 0
+        for p in occupied:
+            left = max(0, int(p["x"]) - px(0.5, dpi))
+            if left > cursor:
+                free_width += left - cursor
+            cursor = max(cursor, int(p["x"]) + int(p["w"]) + px(0.5, dpi))
+        if cursor < roll_px:
+            free_width += roll_px - cursor
+        free_area += free_width * row["h"]
+    free_equiv = free_area / max(1, roll_px)
+    rotated = len({p["item_id"] for p in placements if p.get("rotate")})
+    return (height + 0.28 * free_equiv + 0.02 * dpi * rotated, height, free_equiv, rotated)
+
+
+def shelf_pack(items: List[Dict], dpi: int, gap_in: float, roll_w: float, max_len: float, quick: bool = False):
+    """Choose between contiguous row-tail filling and rectangular group packing."""
+    roll_px = px(roll_w, dpi)
+    candidates = []
+    try:
+        row_result = _row_interval_pack(items, dpi, gap_in, roll_w, max_len, quick=quick)
+        if row_result is not None:
+            candidates.append(row_result)
+    except ValueError:
+        pass
+    # For larger orders, keep the alternative search bounded. The row-run
+    # method is the primary production strategy and has predictable run time.
+    try:
+        use_quick = quick or len(items) > 16
+        group_result = _maxrects_group_pack(items, dpi, gap_in, roll_w, max_len, quick=use_quick)
+        if group_result is not None:
+            candidates.append(group_result)
+    except ValueError:
+        pass
+    if not candidates:
+        raise ValueError("No grouped, cut-friendly layout fits under the 89.9-inch maximum. Reduce quantities or review artwork dimensions.")
+    return min(candidates, key=lambda result: _layout_quality(result, roll_px, dpi))
+
 def pack_multiple_sheets(items: List[Dict], dpi: int, gap_in: float, roll_w: float, max_len: float):
     """Split oversized orders into cut-aware sheets without repeated deep searches.
 
@@ -753,8 +1078,8 @@ def main_app():
         st.markdown("<div class='page-eyebrow'>Workspace guide</div><div class='page-title'>About Print Nest</div>", unsafe_allow_html=True)
         st.markdown("<p class='page-subtitle'>An open-access DTF gangsheet workspace for preparing production-ready transparent PNGs.</p>", unsafe_allow_html=True)
         st.markdown("### How it works")
-        st.write("Upload your transparent PNG artwork, enter the copy quantity for each design, and generate one or more sheets automatically. The app groups identical designs, evaluates exact 90° rotations and checks the sheet-length limit.")
-        st.warning("The packing method is a bounded, cut-aware heuristic. It is not guaranteed to find the global mathematical optimum. Always inspect the sheet previews and copy-count checks before printing.")
+        st.write("Upload your transparent PNG artwork, enter the copy quantity for each design, and generate one or more sheets automatically. The app keeps identical designs in contiguous runs, fills usable ends of partial rows with the next design, evaluates exact 90° rotations and checks the sheet-length limit.")
+        st.warning("The packing method keeps repeated designs together, but can use the open end of a partial row for the next design when dimensions allow. It preserves the 0.5-inch clearance and is a bounded heuristic, not a guaranteed global optimum. Always inspect the sheet previews and copy-count checks before printing.")
         st.write("No sign-in is required. Orders are processed in the active browser session; download your output before closing the page.")
 
     else:
