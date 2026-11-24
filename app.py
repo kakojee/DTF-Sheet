@@ -6,7 +6,7 @@ import streamlit as st
 from PIL import Image, ImageOps
 
 APP_TITLE = "kakojee Print Nest"
-APP_BUILD = "2026.11.24-contiguous-row-fill-02"
+APP_BUILD = "2026.11.24-space-aware-side-lanes-03"
 ROLL_WIDTH_IN = 23.0
 MAX_LENGTH_IN = 89.9
 GAP_IN = 0.5
@@ -365,35 +365,80 @@ def _row_interval_pack(items: List[Dict], dpi: int, gap_in: float, roll_w: float
 
         variants = []
 
-        def build_from(row_index, lo, hi, partial_allowed):
+        def build_from(row_index, lo, hi):
+            """Fill one aligned lane through every compatible existing row.
+
+            A logo does not need all of its copies to fit in a single row gap.
+            The same x-anchor is reused on later rows, and a small design may
+            stack vertically inside a taller row. This is the key side-lane
+            behaviour: e.g. one small logo can occupy the open right edge of
+            each row of a large repeated design instead of being pushed to the
+            bottom as a separate block.
+            """
             trial = clone_rows(rows)
-            target = trial[row_index]
-            capacity = int((hi - lo + gap_px) // (w + gap_px))
-            if capacity <= 0 or (not partial_allowed and capacity < qty):
+            anchor_x = int(lo)
+            seed_capacity = int((hi - anchor_x + gap_px) // (w + gap_px))
+            if seed_capacity <= 0:
                 return None
-            take = min(qty, capacity)
-            remaining = qty - take
+
+            remaining = qty
             copy_number = 1
-            for j in range(take):
-                x = lo + j * (w + gap_px)
-                target["placements"].append({
-                    "item_id": int(item["id"]), "x": x, "y": int(target["y"]),
-                    "w": int(w), "h": int(h), "name": item["name"],
-                    "copy": copy_number, "rotate": bool(rotate),
-                })
-                copy_number += 1
-            anchor_x = lo
+
+            # Reuse this aligned x lane across existing rows. Each row is
+            # checked independently, so no copy is placed through an occupied
+            # interval. Existing row height can hold more than one smaller
+            # copy vertically when the 0.5-inch clearance permits it.
+            for current_index in range(row_index, len(trial)):
+                row = trial[current_index]
+                if int(row["h"]) < h:
+                    continue
+
+                row_capacities = []
+                for left, right in free_intervals(row):
+                    if int(left) <= anchor_x and int(right) >= anchor_x + w:
+                        row_capacities.append(
+                            int((int(right) - anchor_x + gap_px) // (w + gap_px))
+                        )
+                if not row_capacities:
+                    continue
+
+                columns = min(seed_capacity, max(row_capacities))
+                vertical_slots = int((int(row["h"]) + gap_px) // (h + gap_px))
+                for slot in range(vertical_slots):
+                    if remaining <= 0:
+                        break
+                    y = int(row["y"]) + slot * (h + gap_px)
+                    batch = min(remaining, columns)
+                    for col in range(batch):
+                        x = anchor_x + col * (w + gap_px)
+                        row["placements"].append({
+                            "item_id": int(item["id"]), "x": x, "y": y,
+                            "w": int(w), "h": int(h), "name": item["name"],
+                            "copy": copy_number, "rotate": bool(rotate),
+                        })
+                        copy_number += 1
+                    remaining -= batch
+                if remaining <= 0:
+                    break
+
+            # If the aligned side lanes do not hold the full quantity, continue
+            # below the existing layout at the same anchor. This preserves a
+            # visible group while still using any earlier space first.
             while remaining > 0:
                 next_y = max(r["y"] + r["h"] for r in trial) + gap_px
                 new_row = {"y": next_y, "h": h, "placements": []}
                 trial.append(new_row)
-                continuation_capacity = int((roll_px - anchor_x + gap_px) // (w + gap_px))
+                continuation_capacity = int(
+                    (roll_px - anchor_x + gap_px) // (w + gap_px)
+                )
                 if continuation_capacity <= 0:
                     anchor_x = 0
                     continuation_capacity = int((roll_px + gap_px) // (w + gap_px))
+                if continuation_capacity <= 0:
+                    return None
                 batch = min(remaining, continuation_capacity)
-                for j in range(batch):
-                    x = anchor_x + j * (w + gap_px)
+                for col in range(batch):
+                    x = anchor_x + col * (w + gap_px)
                     new_row["placements"].append({
                         "item_id": int(item["id"]), "x": x, "y": int(new_row["y"]),
                         "w": int(w), "h": int(h), "name": item["name"],
@@ -403,26 +448,36 @@ def _row_interval_pack(items: List[Dict], dpi: int, gap_in: float, roll_w: float
                 remaining -= batch
             return trial
 
-        # Search older rows only when this entire design can fit in one open
-        # interval. That fills otherwise stranded gaps without scattering a
-        # design across distant rows.
-        for row_index in range(len(rows) - 1, -1, -1):
-            row = rows[row_index]
-            if h > row["h"]:
+        # Try usable spaces across the whole placed layout, not only the last
+        # row. Equivalent lane anchors are deduplicated: an earlier row with
+        # the same x/capacity can feed that lane through all following rows.
+        seed_specs = []
+        seen_seeds = set()
+        for row_index, row in enumerate(rows):
+            if int(row["h"]) < h:
                 continue
-            is_bottom_row = row_index == len(rows) - 1
             for lo, hi in free_intervals(row):
                 capacity = int((hi - lo + gap_px) // (w + gap_px))
                 if capacity <= 0:
                     continue
-                if not is_bottom_row and capacity < qty:
+                signature = (int(lo), capacity)
+                if signature in seen_seeds:
                     continue
-                trial = build_from(row_index, lo, hi, partial_allowed=is_bottom_row)
-                if trial is not None:
-                    variants.append(trial)
+                seen_seeds.add(signature)
+                seed_specs.append((row_index, int(lo), int(hi), capacity))
 
-        # Fresh-row alternative: preserve an older tail for a later, smaller
-        # design if using it now would force the current design into many rows.
+        # Bound candidate generation on large orders while retaining narrow
+        # side lanes as well as wider cavities. Earlier anchors can exploit
+        # more existing rows; wider lanes are preferred within the same row.
+        seed_specs.sort(key=lambda seed: (seed[0], -seed[3], seed[1]))
+        seed_limit = 24 if quick else 48
+        for row_index, lo, hi, _capacity in seed_specs[:seed_limit]:
+            trial = build_from(row_index, lo, hi)
+            if trial is not None:
+                variants.append(trial)
+
+        # Fresh-row alternative: preserve older spaces only when using them
+        # would make the current design less efficient or harder to cut.
         next_y = max((r["y"] + r["h"] for r in rows), default=0)
         if rows:
             next_y += gap_px
