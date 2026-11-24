@@ -1,22 +1,8 @@
-# kakojee Print Nest
+# kakojee Print Nest — Light Input UI Fix
 
-Open-access Streamlit app for creating DTF gangsheet PNGs from transparent PNG artwork.
-
-## Production rules
-- 23-inch roll width
-- 89.9-inch maximum sheet length
-- 0.5-inch spacing
-- 300 DPI transparent PNG export
-- Original artwork pixels and dimensions are preserved; exact 90-degree rotation is allowed
-
-## Run locally
-
-```bash
-pip install -r requirements.txt
-streamlit run app.py
-```
+This update keeps the existing upload handling and packing engine and corrects the light-theme styling for quantity inputs, other BaseWeb form controls, upload file cards, and design quantity cards.
 
 ## Deploy
-Replace the root-level `app.py` in the existing GitHub repository with this version and commit the change. Keep the existing `requirements.txt` and `.streamlit/config.toml`; Streamlit Community Cloud will redeploy the app.
+Replace the root-level `app.py` in the existing GitHub repository with this file. Replace `.streamlit/config.toml` with the included config. Keep the existing `requirements.txt` unless your repository has a newer working version. Commit the change and allow Streamlit Community Cloud to redeploy.
 
-The packing algorithm is a bounded heuristic. Inspect previews and copy counts before production.
+The app URL and repository remain unchanged.

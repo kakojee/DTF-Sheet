@@ -6,7 +6,7 @@ import streamlit as st
 from PIL import Image, ImageOps
 
 APP_TITLE = "kakojee Print Nest"
-APP_BUILD = "2026.11.23-upload-total-fix-02"
+APP_BUILD = "2026.11.23-light-input-ui-fix-03"
 ROLL_WIDTH_IN = 23.0
 MAX_LENGTH_IN = 89.9
 GAP_IN = 0.5
@@ -571,6 +571,160 @@ def main_app():
       [data-testid="stFileUploader"] section { padding:.8rem .6rem !important; }
       [data-testid="stHorizontalBlock"] { gap:.55rem; }
     }
+
+    /* Consistent light controls: explicitly style BaseWeb wrappers as well as inputs.
+       This prevents inherited dark browser/Streamlit styles from turning quantity fields black. */
+    .stApp, .stApp * { color-scheme: light; }
+    [data-testid="stNumberInput"], [data-testid="stTextInput"],
+    [data-testid="stTextArea"], [data-testid="stSelectbox"],
+    [data-testid="stMultiSelect"], [data-testid="stDateInput"] { color-scheme: light !important; }
+
+    [data-testid="stNumberInput"] [data-baseweb="input"],
+    [data-testid="stTextInput"] [data-baseweb="input"],
+    [data-testid="stTextArea"] [data-baseweb="textarea"],
+    [data-testid="stDateInput"] [data-baseweb="input"],
+    [data-testid="stSelectbox"] [data-baseweb="select"] > div,
+    [data-testid="stMultiSelect"] [data-baseweb="select"] > div {
+      background:#FFFFFF !important;
+      color:#182230 !important;
+      border:1px solid #CBD5E1 !important;
+      border-radius:10px !important;
+      box-shadow:none !important;
+    }
+    [data-testid="stNumberInput"] [data-baseweb="input"] > div,
+    [data-testid="stTextInput"] [data-baseweb="input"] > div,
+    [data-testid="stDateInput"] [data-baseweb="input"] > div,
+    [data-testid="stTextArea"] [data-baseweb="textarea"] > div {
+      background:#FFFFFF !important;
+      color:#182230 !important;
+    }
+    [data-testid="stNumberInput"] input,
+    [data-testid="stTextInput"] input,
+    [data-testid="stDateInput"] input,
+    [data-testid="stTextArea"] textarea,
+    [data-testid="stSelectbox"] input,
+    [data-testid="stMultiSelect"] input,
+    input[type="number"], input[type="text"], textarea {
+      background:transparent !important;
+      color:#182230 !important;
+      -webkit-text-fill-color:#182230 !important;
+      caret-color:#24466F !important;
+      opacity:1 !important;
+    }
+    [data-testid="stNumberInput"] input::placeholder,
+    [data-testid="stTextInput"] input::placeholder,
+    [data-testid="stTextArea"] textarea::placeholder {
+      color:#98A2B3 !important;
+      -webkit-text-fill-color:#98A2B3 !important;
+      opacity:1 !important;
+    }
+    [data-testid="stNumberInput"] [data-baseweb="input"]:focus-within,
+    [data-testid="stTextInput"] [data-baseweb="input"]:focus-within,
+    [data-testid="stTextArea"] [data-baseweb="textarea"]:focus-within,
+    [data-testid="stDateInput"] [data-baseweb="input"]:focus-within,
+    [data-testid="stSelectbox"] [data-baseweb="select"] > div:focus-within {
+      border-color:#4776A8 !important;
+      box-shadow:0 0 0 3px rgba(71,118,168,.15) !important;
+    }
+    [data-testid="stNumberInput"] button {
+      background:#F1F5F9 !important;
+      color:#344054 !important;
+      border:0 !important;
+      border-left:1px solid #E2E8F0 !important;
+      border-radius:0 !important;
+      box-shadow:none !important;
+      min-height:unset !important;
+      transform:none !important;
+    }
+    [data-testid="stNumberInput"] button:hover { background:#E8EEF5 !important; }
+    [data-testid="stNumberInput"] button svg { color:#344054 !important; fill:#344054 !important; }
+
+    /* Upload dropzone and the uploaded-file list are both light, readable surfaces. */
+    [data-testid="stFileUploader"] { color:#344054 !important; }
+    [data-testid="stFileUploader"] section {
+      background:#F8FAFC !important;
+      border:1.5px dashed #9FB0C4 !important;
+      border-radius:16px !important;
+      color:#344054 !important;
+    }
+    [data-testid="stFileUploader"] section * { color:#344054 !important; }
+    [data-testid="stFileUploader"] section button {
+      background:#24466F !important;
+      color:#FFFFFF !important;
+      border:1px solid #24466F !important;
+      border-radius:9px !important;
+    }
+    [data-testid="stFileUploader"] section button * { color:#FFFFFF !important; }
+    [data-testid="stFileUploader"] [data-testid="stFileUploaderFile"],
+    [data-testid="stFileUploader"] [data-testid="stFileUploaderFile"] > div,
+    [data-testid="stFileUploader"] [data-testid="stFileUploaderFile"] > div > div,
+    [data-testid="stFileUploader"] [data-testid="stFileUploaderFileName"],
+    [data-testid="stFileUploader"] [class*="uploadedFile"],
+    [data-testid="stFileUploader"] [class*="UploadedFile"],
+    [data-testid="stFileUploader"] [role="listitem"],
+    [data-testid="stFileUploader"] section ~ div,
+    [data-testid="stFileUploader"] section ~ div > div {
+      background:#F1F5F9 !important;
+      color:#243447 !important;
+      border-color:#D7E0EA !important;
+      border-radius:9px !important;
+    }
+    [data-testid="stFileUploader"] [data-testid="stFileUploaderFile"] *,
+    [data-testid="stFileUploader"] [data-testid="stFileUploaderFileName"] *,
+    [data-testid="stFileUploader"] [class*="uploadedFile"] *,
+    [data-testid="stFileUploader"] [class*="UploadedFile"] *,
+    [data-testid="stFileUploader"] [role="listitem"] * {
+      color:#243447 !important;
+      -webkit-text-fill-color:#243447 !important;
+    }
+    [data-testid="stFileUploader"] [data-testid="stFileUploaderFile"] button,
+    [data-testid="stFileUploader"] [role="listitem"] button {
+      background:#FFFFFF !important;
+      color:#344054 !important;
+      border:1px solid #CBD5E1 !important;
+      box-shadow:none !important;
+      min-height:unset !important;
+      transform:none !important;
+    }
+
+    /* Quiet, consistent cards for each design's quantity and preview. */
+    [data-testid="stVerticalBlockBorderWrapper"] {
+      background:#FFFFFF !important;
+      border:1px solid #E2E8F0 !important;
+      border-radius:15px !important;
+      box-shadow:0 4px 14px rgba(16,24,40,.035) !important;
+      padding:.15rem !important;
+    }
+    [data-testid="stVerticalBlockBorderWrapper"] [data-testid="stCaptionContainer"] p {
+      color:#667085 !important;
+    }
+    [data-testid="stNumberInput"] label,
+    [data-testid="stTextInput"] label,
+    [data-testid="stSelectbox"] label {
+      color:#475467 !important;
+      font-weight:600 !important;
+    }
+    .stButton button, .stDownloadButton button, [data-testid="stFormSubmitButton"] button {
+      background:#24466F !important;
+      color:#FFFFFF !important;
+      border:1px solid #24466F !important;
+      border-radius:11px !important;
+      box-shadow:0 3px 8px rgba(36,70,111,.16) !important;
+    }
+    .stButton button *, .stDownloadButton button *, [data-testid="stFormSubmitButton"] button * {
+      color:#FFFFFF !important;
+    }
+    .stButton button:focus-visible, .stDownloadButton button:focus-visible,
+    [data-testid="stFormSubmitButton"] button:focus-visible {
+      outline:3px solid rgba(71,118,168,.3) !important;
+      outline-offset:2px !important;
+    }
+    @media (max-width:700px) {
+      [data-testid="stVerticalBlockBorderWrapper"] { padding:.1rem !important; }
+      [data-testid="stNumberInput"] input { font-size:16px !important; }
+      [data-testid="stFileUploader"] section { padding:.85rem !important; }
+    }
+
     </style>""", unsafe_allow_html=True)
 
     with st.sidebar:
